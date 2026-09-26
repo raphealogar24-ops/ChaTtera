@@ -1,0 +1,324 @@
+{
+  "entities": {
+    "UserPrivate": {
+      "title": "UserPrivate",
+      "description": "Isolated private user record storing PII (email) and personal key fingerprint. Accessible strictly by the document owner.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the account owner.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Verified email address of the user.",
+          "minLength": 3,
+          "maxLength": 254
+        },
+        "keyFingerprint": {
+          "type": "string",
+          "description": "SHA-256 fingerprint of the active ECDH P-256 public key.",
+          "minLength": 16,
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the private record was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the private record was last updated."
+        }
+      },
+      "required": ["uid", "email", "keyFingerprint", "createdAt", "updatedAt"]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Public cryptographic identity directory entry containing zero PII. Publishes ECDH P-256 public key coordinates for Diffie-Hellman key exchange.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the user.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Public display name shown in directory and conversations.",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "handle": {
+          "type": "string",
+          "description": "Unique-style alphanumeric handle for peer lookup.",
+          "minLength": 2,
+          "maxLength": 32,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "statusText": {
+          "type": "string",
+          "description": "Short cryptographic status note.",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "publicKeyX": {
+          "type": "string",
+          "description": "Base64URL X coordinate of the user's ECDH P-256 public key.",
+          "minLength": 20,
+          "maxLength": 128
+        },
+        "publicKeyY": {
+          "type": "string",
+          "description": "Base64URL Y coordinate of the user's ECDH P-256 public key.",
+          "minLength": 20,
+          "maxLength": 128
+        },
+        "keyFingerprint": {
+          "type": "string",
+          "description": "Formatted SHA-256 fingerprint of the ECDH P-256 public key.",
+          "minLength": 16,
+          "maxLength": 128
+        },
+        "discoverable": {
+          "type": "boolean",
+          "description": "Whether this profile can be queried in the public key directory."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the profile was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the profile was last updated."
+        }
+      },
+      "required": [
+        "uid",
+        "displayName",
+        "handle",
+        "statusText",
+        "publicKeyX",
+        "publicKeyY",
+        "keyFingerprint",
+        "discoverable",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Conversation": {
+      "title": "Conversation",
+      "description": "End-to-end encrypted 1-to-1 communication channel between participantA and participantB.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Deterministic or random conversation document ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "participantA": {
+          "type": "string",
+          "description": "UID of first participant.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "participantB": {
+          "type": "string",
+          "description": "UID of second participant.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "participantAName": {
+          "type": "string",
+          "description": "Display name of participant A.",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "participantBName": {
+          "type": "string",
+          "description": "Display name of participant B.",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "participantAHandle": {
+          "type": "string",
+          "description": "Handle of participant A.",
+          "minLength": 2,
+          "maxLength": 32,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "participantBHandle": {
+          "type": "string",
+          "description": "Handle of participant B.",
+          "minLength": 2,
+          "maxLength": 32,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "status": {
+          "type": "string",
+          "description": "Lifecycle status of the channel. 'locked' is a terminal state.",
+          "enum": ["active", "archived", "locked"]
+        },
+        "lastCiphertextPreview": {
+          "type": "string",
+          "description": "Truncated ciphertext indicator of the latest encrypted packet.",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "messageCount": {
+          "type": "integer",
+          "description": "Total count of encrypted packets transmitted in this session."
+        },
+        "lastSenderId": {
+          "type": "string",
+          "description": "UID of the participant who performed the latest channel mutation.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of channel creation."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of latest channel mutation."
+        }
+      },
+      "required": [
+        "id",
+        "participantA",
+        "participantB",
+        "participantAName",
+        "participantBName",
+        "participantAHandle",
+        "participantBHandle",
+        "status",
+        "lastCiphertextPreview",
+        "messageCount",
+        "lastSenderId",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "EncryptedMessage": {
+      "title": "EncryptedMessage",
+      "description": "Individual AES-256-GCM encrypted packet stored inside a conversation subcollection.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Message document ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "conversationId": {
+          "type": "string",
+          "description": "Parent conversation ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "senderId": {
+          "type": "string",
+          "description": "UID of the sender who encrypted the message.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "recipientId": {
+          "type": "string",
+          "description": "UID of the intended recipient.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "senderKeyFingerprint": {
+          "type": "string",
+          "description": "SHA-256 fingerprint of sender's public key at encryption time.",
+          "minLength": 16,
+          "maxLength": 128
+        },
+        "ciphertext": {
+          "type": "string",
+          "description": "Base64-encoded AES-256-GCM ciphertext and authentication tag.",
+          "minLength": 1,
+          "maxLength": 8192
+        },
+        "iv": {
+          "type": "string",
+          "description": "Base64-encoded 96-bit initialization vector.",
+          "minLength": 12,
+          "maxLength": 64
+        },
+        "algorithm": {
+          "type": "string",
+          "description": "Cryptographic suite identifier.",
+          "enum": ["ECDH-P256-AES256GCM"]
+        },
+        "deliveryStatus": {
+          "type": "string",
+          "description": "Packet delivery state. 'revoked' is a terminal state.",
+          "enum": ["sent", "delivered", "verified", "revoked"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when packet was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when packet state was last updated."
+        }
+      },
+      "required": [
+        "id",
+        "conversationId",
+        "senderId",
+        "recipientId",
+        "senderKeyFingerprint",
+        "ciphertext",
+        "iv",
+        "algorithm",
+        "deliveryStatus",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserPrivate" },
+      "description": "Private user vault containing PII (email). Strictly restricted to document owner."
+    },
+    "/profiles/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Public cryptographic identity and ECDH P-256 public key directory (no PII)."
+    },
+    "/conversations/{conversationId}": {
+      "schema": { "$ref": "#/entities/Conversation" },
+      "description": "End-to-end encrypted communication sessions between two verified users."
+    },
+    "/conversations/{conversationId}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/EncryptedMessage" },
+      "description": "AES-256-GCM encrypted message frames belonging to a conversation."
+    }
+  }
+}

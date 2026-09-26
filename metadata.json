@@ -1,0 +1,6 @@
+{
+  "name": "CipherGrid E2EE Messenger",
+  "description": "Zero-trust real-time messaging platform with WebCrypto ECDH P-256 key agreement, AES-256-GCM end-to-end encryption, and cryptographic packet inspection.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
