@@ -163,8 +163,11 @@ function MainChatteraApp() {
     };
   });
   const [isLoggedOut, setIsLoggedOut] = useState<boolean>(() => {
-    return window.localStorage.getItem('chatteraLoggedOut') === 'true';
+    return window.sessionStorage.getItem('chatteraActiveSession') !== 'true';
   });
+  const [authInitialStage, setAuthInitialStage] = useState<
+    'intro' | 'login' | 'signup'
+  >('intro');
   const [authError, setAuthError] = useState<string | null>(null);
 
   // 3. Navigation & Responsive Stage State
@@ -1459,6 +1462,9 @@ function MainChatteraApp() {
     try {
       await signInWithPopup(auth, googleProvider);
       setIsLoggedOut(false);
+      setNavTab('home');
+      setMobileChatOpen(false);
+      window.sessionStorage.setItem('chatteraActiveSession', 'true');
       window.localStorage.removeItem('chatteraLoggedOut');
     } catch (err) {
       const msg =
@@ -1472,7 +1478,13 @@ function MainChatteraApp() {
   const handleQuickSignIn = (user: LocalSessionUser) => {
     setAuthError(null);
     setLocalUser(user);
+    if (user.statusText) {
+      setMyCustomStatus(user.statusText);
+    }
     setIsLoggedOut(false);
+    setNavTab('home');
+    setMobileChatOpen(false);
+    window.sessionStorage.setItem('chatteraActiveSession', 'true');
     window.localStorage.setItem('chatteraSessionUser', JSON.stringify(user));
     window.localStorage.removeItem('chatteraLoggedOut');
   };
@@ -1489,7 +1501,9 @@ function MainChatteraApp() {
     }
     setProfileModalOpen(false);
     setNotificationsOpen(false);
+    setAuthInitialStage('login');
     setIsLoggedOut(true);
+    window.sessionStorage.removeItem('chatteraActiveSession');
     window.localStorage.setItem('chatteraLoggedOut', 'true');
   };
 
@@ -1591,7 +1605,7 @@ function MainChatteraApp() {
     );
   }, [contacts, searchQuery]);
 
-  // If the user logged out, show the clean, welcoming Chattera Login View
+  // If the user logged out or is on the entry flow, show the Intro Logo, Login Page & Sign Up Page
   if (isLoggedOut) {
     return (
       <ChatteraAuthView
@@ -1599,6 +1613,8 @@ function MainChatteraApp() {
         onQuickSignIn={handleQuickSignIn}
         authError={authError}
         darkMode={darkMode}
+        onToggleDarkMode={() => setDarkMode(!darkMode)}
+        initialStage={authInitialStage}
       />
     );
   }
