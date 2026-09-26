@@ -485,7 +485,7 @@ export const ProfileKeyVaultModal: React.FC<ProfileKeyVaultModalProps> = ({
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!isAuthenticated || !myProfile) {
+    if (!myProfile) {
       await onSignInWithGoogle();
       return;
     }
@@ -501,7 +501,7 @@ export const ProfileKeyVaultModal: React.FC<ProfileKeyVaultModalProps> = ({
         statusText: cleanStatus,
         discoverable,
       });
-      setFeedback('Profile & public directory identity synchronized to Firestore.');
+      setFeedback('Your profile settings have been updated.');
     } finally {
       setSaving(false);
     }

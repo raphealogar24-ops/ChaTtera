@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   onAuthStateChanged,
   signInWithPopup,
@@ -12,7 +12,7 @@ import {
   onSnapshot,
   query,
   serverTimestamp,
-   Timestamp,
+  Timestamp,
   updateDoc,
   where,
   writeBatch,
@@ -21,7 +21,8 @@ import {
   Bell,
   Home,
   KeyRound,
-  Lock,
+  LogIn,
+  LogOut,
   MessageCircle,
   Moon,
   Phone,
@@ -78,6 +79,11 @@ import {
 } from './chatteraData';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { ChatteraAvatar } from './components/ChatteraAvatar';
+import { ChatteraLogo } from './components/ChatteraLogo';
+import {
+  ChatteraAuthView,
+  LocalSessionUser,
+} from './components/ChatteraAuthView';
 import {
   ActiveCallSession,
   EncryptedCallModal,
@@ -96,8 +102,33 @@ import { SecurityAuditView } from './components/SecurityAuditView';
 
 type ChatteraNavTab = 'home' | 'chats' | 'status' | 'calls' | 'wallet' | 'bench';
 
+interface WsRealtimeMessage {
+  id: string;
+  conversationId: string;
+  senderId: string;
+  senderName: string;
+  senderHandle: string;
+  recipientId: string;
+  senderKeyFingerprint: string;
+  ciphertext: string;
+  iv: string;
+  algorithm: 'ECDH-P256-AES256GCM';
+  deliveryStatus: 'sent' | 'delivered' | 'verified' | 'revoked';
+  plaintext: string;
+  createdAtMs: number;
+  updatedAtMs: number;
+}
+
+interface WsPresenceUser {
+  uid: string;
+  name: string;
+  handle: string;
+  avatarUrl?: string;
+  online: boolean;
+}
+
 function MainChatteraApp() {
-  // 1. Theme State (persisted to localStorage under 'chatteraTheme')
+  // 1. Theme State
   const [darkMode, setDarkMode] = useState<boolean>(() => {
     const saved = window.localStorage.getItem('chatteraTheme');
     return saved === 'dark';
@@ -113,13 +144,36 @@ function MainChatteraApp() {
     }
   }, [darkMode]);
 
-  // 2. Navigation & Responsive Stage State
+  // 2. User-Friendly Login / Logout Session State
+  const [localUser, setLocalUser] = useState<LocalSessionUser | null>(() => {
+    const saved = window.localStorage.getItem('chatteraSessionUser');
+    if (saved) {
+      try {
+        return JSON.parse(saved) as LocalSessionUser;
+      } catch {
+        // Ignore parse error
+      }
+    }
+    return {
+      uid: 'user_rapheal',
+      displayName: 'Rapheal Ogar',
+      handle: 'rapheal_ogar',
+      email: 'rapheal@chattera.app',
+      avatarUrl: 'https://i.pravatar.cc/100?img=11',
+    };
+  });
+  const [isLoggedOut, setIsLoggedOut] = useState<boolean>(() => {
+    return window.localStorage.getItem('chatteraLoggedOut') === 'true';
+  });
+  const [authError, setAuthError] = useState<string | null>(null);
+
+  // 3. Navigation & Responsive Stage State
   const [navTab, setNavTab] = useState<ChatteraNavTab>('home');
   const [searchQuery, setSearchQuery] = useState('');
   const [mobileChatOpen, setMobileChatOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
 
-  // 3. Modals State
+  // 4. Modals State
   const [activeStory, setActiveStory] = useState<StoryItem | null>(null);
   const [postStatusOpen, setPostStatusOpen] = useState(false);
   const [activeCall, setActiveCall] = useState<ActiveCallSession | null>(null);
@@ -127,7 +181,7 @@ function MainChatteraApp() {
   const [safetyModalOpen, setSafetyModalOpen] = useState(false);
   const [newChatPickerOpen, setNewChatPickerOpen] = useState(false);
 
-  // 4. Local Interactive State (Contacts, Calls, Wallet, Local Encrypted Threads)
+  // 5. Contacts, Calls, Wallet, & Real-Time State
   const [contacts, setContacts] = useState<ChatteraSeedContact[]>(SEED_CONTACTS);
   const [callLogs, setCallLogs] = useState<CallLogEntry[]>(INITIAL_CALL_LOGS);
   const [walletBalance, setWalletBalance] = useState<number>(285000);
@@ -135,10 +189,10 @@ function MainChatteraApp() {
     INITIAL_WALLET_TRANSACTIONS
   );
   const [myCustomStatus, setMyCustomStatus] = useState<string>(
-    'Building end-to-end encrypted experiences on Chattera ✨🔒'
+    'Available on Chattera — send a message or voice note!'
   );
 
-  // Local WebCrypto keypair even before Google Sign-In so encryption works immediately
+  // Local WebCrypto keypair
   const [guestKeyVault, setGuestKeyVault] =
     useState<StoredIdentityKeyVault | null>(null);
   const [guestSharedKey, setGuestSharedKey] = useState<CryptoKey | null>(null);
@@ -146,7 +200,16 @@ function MainChatteraApp() {
     Record<string, DecryptedMessageView[]>
   >({});
 
-  // 5. Firebase Auth & Firestore Real-Time State
+  // Real-Time WebSocket State
+  const wsRef = useRef<WebSocket | null>(null);
+  const [wsConnected, setWsConnected] = useState(false);
+  const [onlinePeers, setOnlinePeers] = useState<WsPresenceUser[]>([]);
+  const [peerActivities, setPeerActivities] = useState<
+    Record<string, 'typing' | 'recording' | 'idle'>
+  >({});
+  const [liveStatuses, setLiveStatuses] = useState<StoryItem[]>([]);
+
+  // 6. Firebase Auth & Firestore Real-Time State
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [keyVault, setKeyVault] = useState<StoredIdentityKeyVault | null>(null);
@@ -183,7 +246,32 @@ function MainChatteraApp() {
     DecryptedMessageView[]
   >([]);
 
-  // Initialize local WebCrypto keypair + seed encrypted messages for the 5 contacts
+  const activeMyUid =
+    currentUser?.uid || localUser?.uid || 'user_rapheal';
+  const activeDisplayName = useMemo(() => {
+    if (myProfile?.displayName) return myProfile.displayName;
+    if (currentUser?.displayName) return currentUser.displayName;
+    if (localUser?.displayName) return localUser.displayName;
+    return 'Rapheal';
+  }, [myProfile, currentUser, localUser]);
+
+  const activeHandle = useMemo(() => {
+    if (myProfile?.handle) return myProfile.handle;
+    if (localUser?.handle) return localUser.handle;
+    return 'rapheal_ogar';
+  }, [myProfile, localUser]);
+
+  const activeAvatarUrl = useMemo(() => {
+    if (currentUser?.photoURL) return currentUser.photoURL;
+    if (localUser?.avatarUrl) return localUser.avatarUrl;
+    return 'https://i.pravatar.cc/100?img=11';
+  }, [currentUser, localUser]);
+
+  const displayFirstName = useMemo(() => {
+    return activeDisplayName.split(' ')[0] || 'Rapheal';
+  }, [activeDisplayName]);
+
+  // Initialize local WebCrypto keypair + seed messages (including a playable Voice Note!)
   useEffect(() => {
     let active = true;
     const initLocalCrypto = async () => {
@@ -201,12 +289,12 @@ function MainChatteraApp() {
       const seededMap: Record<string, DecryptedMessageView[]> = {};
       for (const c of SEED_CONTACTS) {
         const enc = await encryptMessagePlaintext(aesKey, c.initialMessage);
-        seededMap[c.id] = [
+        const list: DecryptedMessageView[] = [
           {
             id: `seed_msg_${c.id}`,
             conversationId: c.id,
             senderId: c.id,
-            recipientId: 'local_rapheal_vault',
+            recipientId: 'user_rapheal',
             senderKeyFingerprint: c.keyFingerprint,
             ciphertext: enc.ciphertext,
             iv: enc.iv,
@@ -218,9 +306,47 @@ function MainChatteraApp() {
             decryptionOk: true,
           },
         ];
+
+        // Add a sample playable Voice Message in Amara's thread
+        if (c.id === 'contact_amara') {
+          const voicePayload =
+            '[VOICE:seed_amara_voice:5:35,68,85,52,90,74,60,88,94,70,48,78,82,64,50,86,72,58,42,66,75,54,40,32] Voice message (0:05)';
+          const encVoice = await encryptMessagePlaintext(aesKey, voicePayload);
+          list.push({
+            id: 'seed_voice_amara',
+            conversationId: c.id,
+            senderId: c.id,
+            recipientId: 'user_rapheal',
+            senderKeyFingerprint: c.keyFingerprint,
+            ciphertext: encVoice.ciphertext,
+            iv: encVoice.iv,
+            algorithm: 'ECDH-P256-AES256GCM',
+            deliveryStatus: 'verified',
+            createdAt: Timestamp.now(),
+            updatedAt: Timestamp.now(),
+            plaintext: voicePayload,
+            decryptionOk: true,
+          });
+        }
+
+        seededMap[c.id] = list;
       }
+
       if (active) {
-        setLocalThreadMessages(seededMap);
+        setLocalThreadMessages((prev) => {
+          const merged: Record<string, DecryptedMessageView[]> = { ...seededMap };
+          for (const [k, existingList] of Object.entries(prev)) {
+            const base = merged[k] || [];
+            const combined = [...base];
+            for (const item of existingList) {
+              if (!combined.some((m) => m.id === item.id)) {
+                combined.push(item);
+              }
+            }
+            merged[k] = combined;
+          }
+          return merged;
+        });
       }
     };
     void initLocalCrypto();
@@ -229,12 +355,202 @@ function MainChatteraApp() {
     };
   }, []);
 
+  // Connect to Real-Time WebSocket Server (/ws) with Auto-Reconnect
+  useEffect(() => {
+    if (isLoggedOut) return;
+    let unmounted = false;
+    let reconnectTimer: number | null = null;
+
+    const connectWs = () => {
+      if (unmounted) return;
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${protocol}//${window.location.host}/ws`;
+      const socket = new WebSocket(wsUrl);
+      wsRef.current = socket;
+
+      socket.onopen = () => {
+        if (unmounted) return;
+        setWsConnected(true);
+        socket.send(
+          JSON.stringify({
+            type: 'user:join',
+            uid: activeMyUid,
+            name: activeDisplayName,
+            handle: activeHandle,
+            avatarUrl: activeAvatarUrl,
+          })
+        );
+      };
+
+      socket.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+          if (!payload || typeof payload.type !== 'string') return;
+
+          if (payload.type === 'init:state') {
+            const rooms = payload.rooms as Record<string, WsRealtimeMessage[]>;
+            if (rooms) {
+              setLocalThreadMessages((prev) => {
+                const next = { ...prev };
+                for (const [roomId, msgs] of Object.entries(rooms)) {
+                  const existing = next[roomId] || [];
+                  const merged = [...existing];
+                  for (const m of msgs) {
+                    if (!merged.some((x) => x.id === m.id)) {
+                      merged.push({
+                        ...m,
+                        createdAt: Timestamp.fromMillis(m.createdAtMs || Date.now()),
+                        updatedAt: Timestamp.fromMillis(m.updatedAtMs || Date.now()),
+                        decryptionOk: true,
+                      });
+                    }
+                  }
+                  next[roomId] = merged;
+                }
+                return next;
+              });
+            }
+            if (Array.isArray(payload.statuses)) {
+              setLiveStatuses(payload.statuses);
+            }
+          } else if (payload.type === 'presence:list') {
+            if (Array.isArray(payload.users)) {
+              setOnlinePeers(payload.users);
+            }
+          } else if (payload.type === 'typing:update') {
+            const { conversationId, uid, mode } = payload;
+            if (uid !== activeMyUid && conversationId) {
+              setPeerActivities((prev) => ({
+                ...prev,
+                [conversationId]: mode || 'idle',
+              }));
+            }
+          } else if (payload.type === 'message:created') {
+            const m: WsRealtimeMessage = payload.message;
+            if (!m || !m.id || !m.conversationId) return;
+
+            const viewMsg: DecryptedMessageView = {
+              id: m.id,
+              conversationId: m.conversationId,
+              senderId: m.senderId,
+              recipientId: m.recipientId,
+              senderKeyFingerprint: m.senderKeyFingerprint,
+              ciphertext: m.ciphertext,
+              iv: m.iv,
+              algorithm: m.algorithm,
+              deliveryStatus: m.deliveryStatus,
+              createdAt: Timestamp.fromMillis(m.createdAtMs || Date.now()),
+              updatedAt: Timestamp.fromMillis(m.updatedAtMs || Date.now()),
+              plaintext: m.plaintext,
+              decryptionOk: true,
+            };
+
+            setLocalThreadMessages((prev) => {
+              const existing = prev[m.conversationId] || [];
+              if (existing.some((x) => x.id === m.id)) return prev;
+              return {
+                ...prev,
+                [m.conversationId]: [...existing, viewMsg],
+              };
+            });
+
+            const cleanPreview = m.plaintext.startsWith('[VOICE:')
+              ? '🎤 Voice message'
+              : m.plaintext.startsWith('[CHT-PAY:')
+              ? '💸 Sent ₦ Transfer'
+              : m.plaintext.startsWith('[STEALTH:')
+              ? '⏱️ Disappearing message'
+              : m.plaintext;
+
+            setContacts((prev) =>
+              prev.map((c) =>
+                c.id === m.conversationId
+                  ? {
+                      ...c,
+                      initialMessage: cleanPreview,
+                      timeLabel: 'Just now',
+                      unreadCount:
+                        selectedTarget.id === m.conversationId
+                          ? 0
+                          : m.senderId !== activeMyUid
+                          ? c.unreadCount + 1
+                          : c.unreadCount,
+                    }
+                  : c
+              )
+            );
+          } else if (payload.type === 'message:revoked') {
+            const { conversationId, messageId } = payload;
+            setLocalThreadMessages((prev) => ({
+              ...prev,
+              [conversationId]: (prev[conversationId] || []).map((m) =>
+                m.id === messageId
+                  ? {
+                      ...m,
+                      ciphertext: '[REVOKED_CIPHERTEXT]',
+                      deliveryStatus: 'revoked',
+                      plaintext: 'This message was unsent',
+                      decryptionOk: false,
+                    }
+                  : m
+              ),
+            }));
+          } else if (payload.type === 'message:ack') {
+            const { conversationId, messageId, status } = payload;
+            setLocalThreadMessages((prev) => ({
+              ...prev,
+              [conversationId]: (prev[conversationId] || []).map((m) =>
+                m.id === messageId ? { ...m, deliveryStatus: status } : m
+              ),
+            }));
+          } else if (payload.type === 'status:published') {
+            const st = payload.status as StoryItem;
+            if (st && st.id) {
+              setLiveStatuses((prev) =>
+                prev.some((s) => s.id === st.id) ? prev : [st, ...prev]
+              );
+            }
+          }
+        } catch {
+          // Ignore malformed WS events
+        }
+      };
+
+      socket.onclose = () => {
+        if (unmounted) return;
+        setWsConnected(false);
+        reconnectTimer = window.setTimeout(connectWs, 2000);
+      };
+    };
+
+    connectWs();
+
+    return () => {
+      unmounted = true;
+      if (reconnectTimer) window.clearTimeout(reconnectTimer);
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+    };
+  }, [
+    isLoggedOut,
+    activeMyUid,
+    activeDisplayName,
+    activeHandle,
+    activeAvatarUrl,
+    selectedTarget.id,
+  ]);
+
   // Track Firebase Auth
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => {
       setCurrentUser(u);
       setAuthReady(true);
-      if (!u) {
+      if (u) {
+        setIsLoggedOut(false);
+        window.localStorage.removeItem('chatteraLoggedOut');
+      } else {
         setKeyVault(null);
         setMyProfile(null);
         setMyPrivateDoc(null);
@@ -245,7 +561,7 @@ function MainChatteraApp() {
     return () => unsub();
   }, []);
 
-  // Bootstrap Firestore Identity when authenticated
+  // Bootstrap Firestore Identity when authenticated with Firebase
   useEffect(() => {
     if (!authReady || !currentUser) return;
     let cancelled = false;
@@ -271,7 +587,7 @@ function MainChatteraApp() {
           handleFirestoreError(err, OperationType.GET, `profiles/${currentUser.uid}`);
         }
 
-        if (!existingProfileSnap.exists() || !existingUserSnap.exists()) {
+        if (!existingProfileSnap?.exists() || !existingUserSnap?.exists()) {
           const email = currentUser.email || `${currentUser.uid}@verified.user`;
           const handle = sanitizeHandle(
             currentUser.displayName || email.split('@')[0] || 'rapheal',
@@ -552,7 +868,7 @@ function MainChatteraApp() {
       setFirestoreDecryptedMessages(
         sorted.map((m) => ({
           ...m,
-          plaintext: 'Deriving ECDH P-256 session key…',
+          plaintext: 'Syncing session key…',
           decryptionOk: false,
         }))
       );
@@ -574,17 +890,6 @@ function MainChatteraApp() {
     };
   }, [rawMsgMapSent, rawMsgMapReceived, sharedKey, selectedTarget.isFirestoreBacked]);
 
-  // Greeting Name
-  const displayFirstName = useMemo(() => {
-    if (myProfile?.displayName) {
-      return myProfile.displayName.split(' ')[0];
-    }
-    if (currentUser?.displayName) {
-      return currentUser.displayName.split(' ')[0];
-    }
-    return 'Rapheal';
-  }, [myProfile, currentUser]);
-
   // Combined Stories List
   const stories = useMemo<StoryItem[]>(() => {
     const baseStories: StoryItem[] = contacts.map((c) => ({
@@ -605,17 +910,16 @@ function MainChatteraApp() {
         name: p.displayName,
         handle: p.handle,
         text: p.statusText,
-        timeAgo: 'Live Directory',
+        timeAgo: 'Live',
         bgGradient: 'linear-gradient(135deg, #5b4bdb 0%, #00b894 100%)',
         keyFingerprint: p.keyFingerprint,
       }));
 
-    return [...baseStories, ...extraPeerStories];
-  }, [contacts, directoryProfiles, currentUser]);
+    return [...liveStatuses, ...baseStories, ...extraPeerStories];
+  }, [liveStatuses, contacts, directoryProfiles, currentUser]);
 
   // Select a seed contact or start a Firestore conversation
   const handleSelectSeedContact = (contact: ChatteraSeedContact) => {
-    // Clear unread badge
     setContacts((prev) =>
       prev.map((c) => (c.id === contact.id ? { ...c, unreadCount: 0 } : c))
     );
@@ -654,7 +958,7 @@ function MainChatteraApp() {
           participantAHandle: pA.handle,
           participantBHandle: pB.handle,
           status: 'active',
-          lastCiphertextPreview: 'ECDH-P256 Handshake Initialized',
+          lastCiphertextPreview: 'Conversation started',
           messageCount: 0,
           lastSenderId: myProfile.uid,
           createdAt: serverTimestamp(),
@@ -676,7 +980,7 @@ function MainChatteraApp() {
         id: peer.uid,
         name:
           peer.uid === myProfile.uid
-            ? 'Personal E2EE Cloud Vault'
+            ? 'Personal Cloud Notes'
             : peer.displayName,
         handle: peer.handle,
         online: true,
@@ -690,7 +994,25 @@ function MainChatteraApp() {
     [currentUser, myProfile]
   );
 
-  // Send Encrypted Message (Works in both Local WebCrypto Mode and Cloud Firestore E2EE Mode)
+  // Broadcast live typing / recording indicator over WebSocket
+  const handleTypingActivity = useCallback(
+    (mode: 'typing' | 'recording' | 'idle') => {
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(
+          JSON.stringify({
+            type: 'typing:update',
+            conversationId: selectedTarget.conversationId || selectedTarget.id,
+            uid: activeMyUid,
+            name: activeDisplayName,
+            mode,
+          })
+        );
+      }
+    },
+    [selectedTarget, activeMyUid, activeDisplayName]
+  );
+
+  // Send Message (Real-Time over WebSocket + Cloud Firestore)
   const handleSendMessage = async (plaintext: string) => {
     if (selectedTarget.isFirestoreBacked && selectedTarget.conversationId) {
       if (!currentUser || !myProfile || !sharedKey) return;
@@ -749,38 +1071,73 @@ function MainChatteraApp() {
       return;
     }
 
-    // Local WebCrypto Encrypted Session for Seed Contacts
+    // Real-Time WebSocket + Local WebCrypto Session
     const activeAesKey = sharedKey || guestSharedKey;
     const activeVault = keyVault || guestKeyVault;
     if (!activeAesKey || !activeVault) return;
 
     const encrypted = await encryptMessagePlaintext(activeAesKey, plaintext);
-    const mySenderUid = currentUser?.uid || 'local_rapheal_vault';
+    const msgId = generateSafeDocId('pkt');
+    const nowMs = Date.now();
+
     const newMsg: DecryptedMessageView = {
-      id: generateSafeDocId('pkt'),
+      id: msgId,
       conversationId: selectedTarget.id,
-      senderId: mySenderUid,
+      senderId: activeMyUid,
       recipientId: selectedTarget.id,
       senderKeyFingerprint: activeVault.keyFingerprint,
       ciphertext: encrypted.ciphertext,
       iv: encrypted.iv,
       algorithm: 'ECDH-P256-AES256GCM',
       deliveryStatus: 'verified',
-      createdAt: Timestamp.now(),
-      updatedAt: Timestamp.now(),
+      createdAt: Timestamp.fromMillis(nowMs),
+      updatedAt: Timestamp.fromMillis(nowMs),
       plaintext,
       decryptionOk: true,
     };
 
-    setLocalThreadMessages((prev) => ({
-      ...prev,
-      [selectedTarget.id]: [...(prev[selectedTarget.id] || []), newMsg],
-    }));
+    // Optimistic local state update
+    setLocalThreadMessages((prev) => {
+      const existing = prev[selectedTarget.id] || [];
+      if (existing.some((m) => m.id === msgId)) return prev;
+      return {
+        ...prev,
+        [selectedTarget.id]: [...existing, newMsg],
+      };
+    });
 
-    const cleanPreview = plaintext.startsWith('[CHT-PAY:')
-      ? '💸 Sent Encrypted ₦ Transfer'
+    // Broadcast to all connected clients in real time via WebSocket
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      const wsPayload: WsRealtimeMessage = {
+        id: msgId,
+        conversationId: selectedTarget.id,
+        senderId: activeMyUid,
+        senderName: activeDisplayName,
+        senderHandle: activeHandle,
+        recipientId: selectedTarget.id,
+        senderKeyFingerprint: activeVault.keyFingerprint,
+        ciphertext: encrypted.ciphertext,
+        iv: encrypted.iv,
+        algorithm: 'ECDH-P256-AES256GCM',
+        deliveryStatus: 'verified',
+        plaintext,
+        createdAtMs: nowMs,
+        updatedAtMs: nowMs,
+      };
+      wsRef.current.send(
+        JSON.stringify({
+          type: 'message:create',
+          message: wsPayload,
+        })
+      );
+    }
+
+    const cleanPreview = plaintext.startsWith('[VOICE:')
+      ? '🎤 Voice message'
+      : plaintext.startsWith('[CHT-PAY:')
+      ? '💸 Sent ₦ Transfer'
       : plaintext.startsWith('[STEALTH:')
-      ? '⏱️ Stealth Time-Capsule Message'
+      ? '⏱️ Disappearing message'
       : plaintext;
 
     setContacts((prev) =>
@@ -825,12 +1182,22 @@ function MainChatteraApp() {
               ...m,
               ciphertext: '[REVOKED_CIPHERTEXT]',
               deliveryStatus: 'revoked',
-              plaintext: '[Packet Cryptographically Revoked by Sender]',
+              plaintext: 'This message was unsent',
               decryptionOk: false,
             }
           : m
       ),
     }));
+
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({
+          type: 'message:revoke',
+          conversationId: selectedTarget.id,
+          messageId,
+        })
+      );
+    }
   };
 
   const handleAcknowledgeMessage = async (
@@ -857,10 +1224,22 @@ function MainChatteraApp() {
           `conversations/${selectedTarget.conversationId}/messages/${messageId}`
         );
       }
+      return;
+    }
+
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({
+          type: 'message:ack',
+          conversationId: selectedTarget.id,
+          messageId,
+          status,
+        })
+      );
     }
   };
 
-  // Send Encrypted Naira Transfer in Chat & Update Wallet Ledger
+  // Send Naira Transfer in Chat & Update Wallet Ledger
   const handleSendEncryptedCash = async (
     recipientName: string,
     recipientHandle: string,
@@ -889,10 +1268,35 @@ function MainChatteraApp() {
     await handleSendMessage(`[CHT-PAY:${amount}:${refCode}:${note}] ${note}`);
   };
 
-  // Publish Status Story
+  // Publish Status Story (Real-time via WebSocket & Firestore)
   const handlePublishStatus = async (newStatusText: string) => {
     const clean = sanitizeStatusText(newStatusText);
     setMyCustomStatus(clean);
+
+    const statusObj: StoryItem = {
+      id: `st_${Date.now()}`,
+      name: activeDisplayName,
+      handle: activeHandle,
+      avatarUrl: activeAvatarUrl,
+      text: clean,
+      timeAgo: 'Just now',
+      bgGradient: 'linear-gradient(135deg, #6c5ce7 0%, #00b894 100%)',
+      keyFingerprint:
+        (keyVault || guestKeyVault)?.keyFingerprint ||
+        'A4F9:19C0:8B2E:771D:3C8A:90E2:55B4:12D8',
+    };
+
+    setLiveStatuses((prev) => [statusObj, ...prev]);
+
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({
+          type: 'status:publish',
+          status: { ...statusObj, uid: activeMyUid, createdAtMs: Date.now() },
+        })
+      );
+    }
+
     if (currentUser && myProfile) {
       try {
         await updateDoc(doc(db, 'profiles', myProfile.uid), {
@@ -909,7 +1313,7 @@ function MainChatteraApp() {
     }
   };
 
-  // Start Voice / Video Call (openCalls / Test Calls)
+  // Start Voice / Video Call
   const openCallsStudio = (
     name = selectedTarget.name,
     handle = selectedTarget.handle,
@@ -948,12 +1352,42 @@ function MainChatteraApp() {
 
   // Auth & Profile Handlers
   const handleGoogleSignIn = async () => {
-    await signInWithPopup(auth, googleProvider);
+    setAuthError(null);
+    try {
+      await signInWithPopup(auth, googleProvider);
+      setIsLoggedOut(false);
+      window.localStorage.removeItem('chatteraLoggedOut');
+    } catch (err) {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : 'Google sign-in popup was closed or blocked. You can also log in directly below.';
+      setAuthError(msg);
+    }
+  };
+
+  const handleQuickSignIn = (user: LocalSessionUser) => {
+    setAuthError(null);
+    setLocalUser(user);
+    setIsLoggedOut(false);
+    window.localStorage.setItem('chatteraSessionUser', JSON.stringify(user));
+    window.localStorage.removeItem('chatteraLoggedOut');
   };
 
   const handleSignOut = async () => {
-    await signOut(auth);
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'user:leave' }));
+      wsRef.current.close();
+    }
+    try {
+      await signOut(auth);
+    } catch {
+      // Ignore signOut errors
+    }
     setProfileModalOpen(false);
+    setNotificationsOpen(false);
+    setIsLoggedOut(true);
+    window.localStorage.setItem('chatteraLoggedOut', 'true');
   };
 
   const handleUpdateProfileMetadata = async (updates: {
@@ -963,6 +1397,15 @@ function MainChatteraApp() {
     discoverable: boolean;
   }) => {
     setMyCustomStatus(updates.statusText);
+    if (localUser) {
+      const nextLocal: LocalSessionUser = {
+        ...localUser,
+        displayName: updates.displayName,
+        handle: updates.handle,
+      };
+      setLocalUser(nextLocal);
+      window.localStorage.setItem('chatteraSessionUser', JSON.stringify(nextLocal));
+    }
     if (!myProfile) return;
     try {
       await updateDoc(doc(db, 'profiles', myProfile.uid), {
@@ -1045,62 +1488,56 @@ function MainChatteraApp() {
     );
   }, [contacts, searchQuery]);
 
+  // If the user logged out, show the clean, welcoming Chattera Login View
+  if (isLoggedOut) {
+    return (
+      <ChatteraAuthView
+        onGoogleSignIn={handleGoogleSignIn}
+        onQuickSignIn={handleQuickSignIn}
+        authError={authError}
+        darkMode={darkMode}
+      />
+    );
+  }
+
   const activeMessages = selectedTarget.isFirestoreBacked
     ? firestoreDecryptedMessages
     : localThreadMessages[selectedTarget.id] || [];
 
-  const activeMyUid = currentUser?.uid || 'local_rapheal_vault';
   const activeVaultForBench = keyVault || guestKeyVault;
+  const activeConvKey = selectedTarget.conversationId || selectedTarget.id;
+  const currentPeerActivity = peerActivities[activeConvKey] || 'idle';
 
   return (
     <div className="min-h-screen pb-24 lg:pb-6 flex flex-col">
       {/* ===================================================================
-          STICKY PROFESSIONAL HEADER (3-Zone Top Bar)
+          STICKY PROFESSIONAL HEADER (Clean 3-Zone Top Bar with Custom Logo)
          =================================================================== */}
       <header
-        className="sticky top-0 z-30 border-b px-4 sm:px-6 py-3.5 transition-colors"
+        className="sticky top-0 z-30 border-b px-4 sm:px-6 py-3 transition-colors"
         style={{ background: 'var(--card)', borderColor: 'var(--border)' }}
       >
         <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
-          {/* Zone 1: Brand Identity */}
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={() => {
-                setNavTab('home');
-                setMobileChatOpen(false);
-              }}
-              className="w-10 h-10 rounded-2xl text-white font-bold text-xl flex items-center justify-center shadow-md shrink-0"
-              style={{
-                background: 'linear-gradient(135deg, #6c5ce7, #4936c8)',
-                boxShadow: '0 7px 18px rgba(91,75,219,.25)',
-              }}
-            >
-              C
-            </button>
-            <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-lg font-bold tracking-tight leading-none">
-                  Chattera
-                </h1>
-                <span
-                  className="hidden sm:inline text-[11px] font-medium"
-                  style={{ color: 'var(--muted)' }}
-                >
-                  · Connect. Share. Chat.
-                </span>
-              </div>
-              <small
-                className="block text-[11px] mt-0.5"
-                style={{ color: 'var(--muted)' }}
-              >
-                End-to-End Encrypted · ECDH P-256 + AES-256-GCM
-              </small>
-            </div>
-          </div>
+          {/* Zone 1: Custom Chattera Brand Logo & Wordmark (No E2EE subtext underneath) */}
+          <button
+            type="button"
+            onClick={() => {
+              setNavTab('home');
+              setMobileChatOpen(false);
+            }}
+            className="flex items-center gap-3 text-left group focus:outline-none"
+          >
+            <ChatteraLogo
+              size={40}
+              className="transition-transform group-active:scale-95"
+            />
+            <span className="text-xl font-bold tracking-tight leading-none">
+              Chattera
+            </span>
+          </button>
 
           {/* Zone 2: Desktop Navigation Links */}
-          <nav className="hidden md:flex items-center gap-5 text-xs font-semibold">
+          <nav className="hidden md:flex items-center gap-6 text-xs font-semibold">
             {(
               [
                 { id: 'home', label: 'Home' },
@@ -1108,7 +1545,6 @@ function MainChatteraApp() {
                 { id: 'status', label: 'Status' },
                 { id: 'calls', label: 'Calls' },
                 { id: 'wallet', label: '₦ Wallet' },
-                { id: 'bench', label: 'E2EE Lab' },
               ] as const
             ).map((item) => (
               <button
@@ -1129,22 +1565,8 @@ function MainChatteraApp() {
             ))}
           </nav>
 
-          {/* Zone 3: Header Actions (Test Calls, Dark Mode, Notifications, Profile) */}
+          {/* Zone 3: User-Friendly Header Actions (Dark Mode, Notifications, Profile, Log Out) */}
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => openCallsStudio()}
-              className="px-3 h-10 rounded-2xl text-xs font-semibold inline-flex items-center gap-1.5 transition-transform active:scale-95 whitespace-nowrap"
-              style={{
-                background: 'var(--soft-tint)',
-                color: 'var(--primary)',
-              }}
-              title="Launch Encrypted Voice/Video Call Studio"
-            >
-              <Phone className="w-3.5 h-3.5" />
-              <span>Test Calls</span>
-            </button>
-
             <button
               type="button"
               onClick={() => setDarkMode(!darkMode)}
@@ -1167,9 +1589,14 @@ function MainChatteraApp() {
                 className="w-10 h-10 rounded-2xl flex items-center justify-center transition-colors relative"
                 style={{ background: 'var(--icon-bg)', color: 'var(--text)' }}
                 aria-label="Notifications"
+                title="Activity & Real-Time Status"
               >
                 <Bell className="w-4 h-4" />
-                <span className="w-2 h-2 rounded-full bg-[#21c47b] absolute top-2.5 right-2.5" />
+                <span
+                  className={`w-2 h-2 rounded-full absolute top-2.5 right-2.5 ${
+                    wsConnected ? 'bg-[#21c47b]' : 'bg-amber-400'
+                  }`}
+                />
               </button>
 
               {notificationsOpen && (
@@ -1181,14 +1608,21 @@ function MainChatteraApp() {
                   }}
                 >
                   <div className="font-bold flex items-center justify-between">
-                    <span>Security & Activity</span>
+                    <span>Real-Time Activity</span>
                     <ShieldCheck className="w-4 h-4 text-[#21c47b]" />
                   </div>
                   <p style={{ color: 'var(--muted)' }}>
-                    • Local WebCrypto ECDH P-256 identity keypair active and verified.
+                    • Live Server Connection:{' '}
+                    <strong className="text-[#21c47b]">
+                      {wsConnected ? 'Connected (Real-Time)' : 'Reconnecting…'}
+                    </strong>
                   </p>
                   <p style={{ color: 'var(--muted)' }}>
-                    • {currentUser ? 'Cloud Firestore E2EE Sync Connected.' : 'Tap your profile icon to link Google Auth for cloud sync.'}
+                    • Active Online Sessions: {Math.max(1, onlinePeers.length)}
+                  </p>
+                  <p style={{ color: 'var(--muted)' }}>
+                    • Signed in as <strong>{activeDisplayName}</strong> (@
+                    {activeHandle})
                   </p>
                 </div>
               )}
@@ -1199,13 +1633,29 @@ function MainChatteraApp() {
               onClick={() => setProfileModalOpen(true)}
               className="rounded-full p-0.5 border-2 transition-transform active:scale-95"
               style={{ borderColor: 'var(--soft-tint)' }}
-              title="Open Profile & E2EE Key Vault"
+              title="Account Settings & Profile"
             >
               <ChatteraAvatar
                 name={displayFirstName}
-                src="https://i.pravatar.cc/100?img=11"
+                src={activeAvatarUrl}
                 size={36}
+                online
               />
+            </button>
+
+            <button
+              type="button"
+              onClick={() => void handleSignOut()}
+              className="h-10 px-3.5 rounded-2xl text-xs font-semibold inline-flex items-center gap-1.5 border transition-colors hover:bg-red-500/10 hover:text-red-500 hover:border-red-500/30 whitespace-nowrap"
+              style={{
+                background: 'var(--icon-bg)',
+                borderColor: 'var(--border)',
+                color: 'var(--text)',
+              }}
+              title="Log out or switch account"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Log Out</span>
             </button>
           </div>
         </div>
@@ -1216,12 +1666,15 @@ function MainChatteraApp() {
          =================================================================== */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-0 sm:px-4 lg:px-6 pt-2 lg:pt-6">
         {navTab === 'bench' && activeVaultForBench ? (
-          <div className="rounded-3xl border overflow-hidden" style={{ background: '#0b0f17', borderColor: 'var(--border)' }}>
+          <div
+            className="rounded-3xl border overflow-hidden"
+            style={{ background: '#0b0f17', borderColor: 'var(--border)' }}
+          >
             <SecurityAuditView keyVault={activeVaultForBench} />
           </div>
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-            {/* LEFT PANE: Chattera Mobile-First Feed / Navigation Column */}
+            {/* LEFT PANE: Chattera Feed / Navigation Column */}
             <div
               className={`lg:col-span-5 space-y-5 ${
                 mobileChatOpen ? 'hidden lg:block' : 'block'
@@ -1230,14 +1683,17 @@ function MainChatteraApp() {
               {/* Welcome Banner */}
               <section className="px-4 sm:px-2 pt-3 flex items-center justify-between gap-3">
                 <div>
-                  <p
-                    className="text-xs font-medium mb-0.5"
-                    style={{ color: 'var(--muted)' }}
-                  >
-                    Welcome back 👋
-                  </p>
+                  <div className="flex items-center gap-2 mb-0.5">
+                    <span className="w-2 h-2 rounded-full bg-[#21c47b]" />
+                    <p
+                      className="text-xs font-medium"
+                      style={{ color: 'var(--muted)' }}
+                    >
+                      Online · @{activeHandle}
+                    </p>
+                  </div>
                   <h2 className="text-2xl font-bold tracking-tight">
-                    Good afternoon, {displayFirstName}
+                    Hello, {displayFirstName} 👋
                   </h2>
                 </div>
 
@@ -1245,18 +1701,22 @@ function MainChatteraApp() {
                   <button
                     type="button"
                     onClick={() => void handleGoogleSignIn()}
-                    className="px-3.5 py-2 rounded-2xl text-xs font-bold text-white shadow-sm whitespace-nowrap"
+                    className="px-3.5 py-2 rounded-2xl text-xs font-semibold border inline-flex items-center gap-1.5 whitespace-nowrap transition-transform active:scale-95"
                     style={{
-                      background: 'linear-gradient(135deg, #6756e7, #4434bd)',
+                      background: 'var(--card)',
+                      borderColor: 'var(--border)',
+                      color: 'var(--primary)',
                     }}
                   >
-                    Cloud Sync
+                    <LogIn className="w-3.5 h-3.5" />
+                    <span>Link Google</span>
                   </button>
                 ) : (
                   <button
                     type="button"
                     onClick={() => {
-                      if (myProfile) void handleStartFirestorePeerSession(myProfile);
+                      if (myProfile)
+                        void handleStartFirestorePeerSession(myProfile);
                     }}
                     className="px-3 py-2 rounded-2xl text-xs font-semibold border whitespace-nowrap inline-flex items-center gap-1.5"
                     style={{
@@ -1264,8 +1724,8 @@ function MainChatteraApp() {
                       borderColor: 'var(--border)',
                     }}
                   >
-                    <Lock className="w-3.5 h-3.5 text-[#5b4bdb]" />
-                    <span>Self Vault</span>
+                    <Sparkles className="w-3.5 h-3.5 text-[#5b4bdb]" />
+                    <span>Personal Notes</span>
                   </button>
                 )}
               </section>
@@ -1286,13 +1746,13 @@ function MainChatteraApp() {
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search chats, people and groups..."
+                  placeholder="Search chats, friends, or messages..."
                   className="w-full text-sm bg-transparent focus:outline-none"
                   style={{ color: 'var(--text)' }}
                 />
               </div>
 
-              {/* 4 Quick Actions Grid (Matches Chattera Prototype) */}
+              {/* 4 Quick Actions Grid */}
               {navTab === 'home' && (
                 <div className="grid grid-cols-4 gap-2.5 px-4 sm:px-2">
                   <button
@@ -1313,7 +1773,7 @@ function MainChatteraApp() {
                     >
                       <Plus className="w-4 h-4" />
                     </div>
-                    <span className="block text-[11px] font-semibold mt-2">
+                    <span className="block text-[11px] font-semibold mt-2 whitespace-nowrap">
                       New Chat
                     </span>
                   </button>
@@ -1336,8 +1796,8 @@ function MainChatteraApp() {
                     >
                       <Users className="w-4 h-4" />
                     </div>
-                    <span className="block text-[11px] font-semibold mt-2">
-                      Contacts
+                    <span className="block text-[11px] font-semibold mt-2 whitespace-nowrap">
+                      People
                     </span>
                   </button>
 
@@ -1359,7 +1819,7 @@ function MainChatteraApp() {
                     >
                       <Radio className="w-4 h-4" />
                     </div>
-                    <span className="block text-[11px] font-semibold mt-2">
+                    <span className="block text-[11px] font-semibold mt-2 whitespace-nowrap">
                       Status
                     </span>
                   </button>
@@ -1382,18 +1842,18 @@ function MainChatteraApp() {
                     >
                       <Phone className="w-4 h-4" />
                     </div>
-                    <span className="block text-[11px] font-semibold mt-2">
+                    <span className="block text-[11px] font-semibold mt-2 whitespace-nowrap">
                       Calls
                     </span>
                   </button>
                 </div>
               )}
 
-              {/* STATUS / STORIES CAROUSEL (Shown on Home & Status tabs) */}
+              {/* STATUS / STORIES CAROUSEL */}
               {(navTab === 'home' || navTab === 'status') && (
                 <section className="space-y-2.5">
                   <div className="px-4 sm:px-2 flex items-center justify-between">
-                    <h3 className="text-sm font-bold">Status</h3>
+                    <h3 className="text-sm font-bold">Status Stories</h3>
                     <button
                       type="button"
                       onClick={() => setPostStatusOpen(true)}
@@ -1448,7 +1908,7 @@ function MainChatteraApp() {
                           className="text-[11px] mt-1.5 truncate font-medium"
                           style={{ color: 'var(--text)' }}
                         >
-                          {st.name}
+                          {st.name.split(' ')[0]}
                         </div>
                       </button>
                     ))}
@@ -1465,7 +1925,7 @@ function MainChatteraApp() {
                       >
                         <div className="min-w-0">
                           <div className="text-xs font-bold">
-                            Your Active Status Note
+                            Your Current Status
                           </div>
                           <p
                             className="text-xs truncate mt-0.5"
@@ -1525,28 +1985,28 @@ function MainChatteraApp() {
                 </section>
               )}
 
-              {/* RECENT CHATS SECTION (Shown on Home & Chats tabs) */}
+              {/* RECENT CHATS SECTION */}
               {(navTab === 'home' || navTab === 'chats') && (
                 <section className="space-y-2">
                   <div className="px-4 sm:px-2 flex items-center justify-between">
-                    <h3 className="text-sm font-bold">Recent Chats</h3>
+                    <h3 className="text-sm font-bold">Messages</h3>
                     <button
                       type="button"
                       onClick={() => setNewChatPickerOpen(true)}
                       className="text-xs font-bold"
                       style={{ color: 'var(--primary)' }}
                     >
-                      + New E2EE Session
+                      + New Chat
                     </button>
                   </div>
 
                   <div className="px-2 sm:px-0 space-y-1">
-                    {/* Active Firestore Cloud Sessions (if signed in) */}
+                    {/* Active Firestore Cloud Sessions (if signed in with Google) */}
                     {currentUser &&
                       firestoreConversations.map((conv) => {
                         const isSelf = conv.participantA === conv.participantB;
                         const title = isSelf
-                          ? 'Personal E2EE Cloud Vault'
+                          ? 'Personal Cloud Notes'
                           : conv.participantA === currentUser.uid
                           ? conv.participantBName
                           : conv.participantAName;
@@ -1599,17 +2059,17 @@ function MainChatteraApp() {
                                   <Sparkles className="w-3.5 h-3.5 text-[#5b4bdb]" />
                                 </span>
                                 <span
-                                  className="text-[10px] font-mono"
+                                  className="text-[10px]"
                                   style={{ color: 'var(--muted)' }}
                                 >
-                                  Cloud E2EE
+                                  Cloud Sync
                                 </span>
                               </div>
                               <div
-                                className="text-xs font-mono truncate mt-1"
+                                className="text-xs truncate mt-1"
                                 style={{ color: 'var(--muted)' }}
                               >
-                                {conv.lastCiphertextPreview}
+                                @{handle}
                               </div>
                             </div>
                           </button>
@@ -1621,6 +2081,8 @@ function MainChatteraApp() {
                       const isSelected =
                         !selectedTarget.isFirestoreBacked &&
                         selectedTarget.id === chat.id;
+                      const activity = peerActivities[chat.id];
+
                       return (
                         <button
                           key={chat.id}
@@ -1659,9 +2121,18 @@ function MainChatteraApp() {
 
                             <div
                               className="text-xs truncate mt-1"
-                              style={{ color: 'var(--muted)' }}
+                              style={{
+                                color:
+                                  activity && activity !== 'idle'
+                                    ? 'var(--primary)'
+                                    : 'var(--muted)',
+                              }}
                             >
-                              {chat.initialMessage}
+                              {activity === 'recording'
+                                ? '🎤 recording voice message…'
+                                : activity === 'typing'
+                                ? 'typing…'
+                                : chat.initialMessage}
                             </div>
                           </div>
 
@@ -1684,16 +2155,14 @@ function MainChatteraApp() {
               {navTab === 'calls' && (
                 <section className="px-4 sm:px-2 space-y-3">
                   <div className="flex items-center justify-between">
-                    <h3 className="text-sm font-bold">
-                      Encrypted Voice & Video Calls
-                    </h3>
+                    <h3 className="text-sm font-bold">Voice & Video Calls</h3>
                     <button
                       type="button"
                       onClick={() => openCallsStudio()}
                       className="px-3 py-1.5 rounded-xl text-xs font-bold text-white"
                       style={{ background: 'var(--primary)' }}
                     >
-                      + Test Call Studio
+                      + Start Call
                     </button>
                   </div>
 
@@ -1809,7 +2278,7 @@ function MainChatteraApp() {
               )}
             </div>
 
-            {/* RIGHT PANE: Active End-to-End Encrypted Chat & Stealth Capsule Stage */}
+            {/* RIGHT PANE: Active Real-Time Chat & Voice Message Stage */}
             <div
               className={`lg:col-span-7 lg:sticky lg:top-20 h-[calc(100vh-120px)] ${
                 mobileChatOpen ? 'block px-2' : 'hidden lg:block'
@@ -1819,6 +2288,7 @@ function MainChatteraApp() {
                 target={selectedTarget}
                 myUid={activeMyUid}
                 messages={activeMessages}
+                peerActivity={currentPeerActivity}
                 onBackMobile={() => setMobileChatOpen(false)}
                 onSendMessage={handleSendMessage}
                 onRevokeMessage={handleRevokeMessage}
@@ -1841,6 +2311,7 @@ function MainChatteraApp() {
                     note
                   )
                 }
+                onTypingActivity={handleTypingActivity}
               />
             </div>
           </div>
@@ -1848,7 +2319,7 @@ function MainChatteraApp() {
       </main>
 
       {/* ===================================================================
-          FLOATING NEW CHAT BUTTON (.fab)
+          FLOATING NEW CHAT BUTTON
          =================================================================== */}
       {!mobileChatOpen && (
         <button
@@ -1859,17 +2330,17 @@ function MainChatteraApp() {
             background: 'linear-gradient(135deg, #6756e7, #4434bd)',
             boxShadow: '0 10px 25px rgba(69,53,189,.35)',
           }}
-          title="Start New Encrypted Chat"
+          title="Start New Chat"
         >
           ＋
         </button>
       )}
 
       {/* ===================================================================
-          BOTTOM NAVIGATION BAR (.bottom-nav for Mobile / Tablet)
+          BOTTOM NAVIGATION BAR (Mobile / Tablet)
          =================================================================== */}
       <nav
-        className="lg:hidden fixed bottom-0 left-0 right-0 h-18 border-t backdrop-blur-md z-30 flex items-center justify-around px-2"
+        className="lg:hidden fixed bottom-0 left-0 right-0 h-16 border-t backdrop-blur-md z-30 flex items-center justify-around px-2"
         style={{
           background: darkMode
             ? 'rgba(25, 25, 37, 0.96)'
@@ -1907,7 +2378,7 @@ function MainChatteraApp() {
       </nav>
 
       {/* ===================================================================
-          MODALS (Story Viewer, Post Status, Call Studio, Profile, New Chat, Safety Number)
+          MODALS
          =================================================================== */}
       {activeStory && (
         <StoryViewerModal
@@ -1918,7 +2389,9 @@ function MainChatteraApp() {
             if (found) {
               handleSelectSeedContact(found);
             }
-            await handleSendMessage(`Replying to status "${st.text}": ${replyText}`);
+            await handleSendMessage(
+              `Replying to status "${st.text}": ${replyText}`
+            );
           }}
         />
       )}
@@ -1940,10 +2413,39 @@ function MainChatteraApp() {
 
       {profileModalOpen && (
         <ProfileKeyVaultModal
-          myProfile={myProfile}
-          myPrivateDoc={myPrivateDoc}
+          myProfile={
+            myProfile || {
+              uid: activeMyUid,
+              displayName: activeDisplayName,
+              handle: activeHandle,
+              statusText: myCustomStatus,
+              publicKeyX:
+                guestKeyVault?.publicKeyX ||
+                'MKBCTNIcKUSDii11ySs3526iDZ8AiTo7Tu6KPAqv7D4',
+              publicKeyY:
+                guestKeyVault?.publicKeyY ||
+                '4Etl6SRW2YiLUrN5vfvVHuhp7x8PxltmWWlbbM4IFyM',
+              keyFingerprint:
+                guestKeyVault?.keyFingerprint ||
+                'A4F9:19C0:8B2E:771D:3C8A:90E2:55B4:12D8',
+              discoverable: true,
+              createdAt: null,
+              updatedAt: null,
+            }
+          }
+          myPrivateDoc={
+            myPrivateDoc || {
+              uid: activeMyUid,
+              email: localUser?.email || 'rapheal@chattera.app',
+              keyFingerprint:
+                guestKeyVault?.keyFingerprint ||
+                'A4F9:19C0:8B2E:771D:3C8A:90E2:55B4:12D8',
+              createdAt: null,
+              updatedAt: null,
+            }
+          }
           keyVault={keyVault || guestKeyVault}
-          isAuthenticated={Boolean(currentUser)}
+          isAuthenticated={Boolean(currentUser || localUser)}
           onClose={() => setProfileModalOpen(false)}
           onSignInWithGoogle={handleGoogleSignIn}
           onSignOut={handleSignOut}
@@ -1957,9 +2459,9 @@ function MainChatteraApp() {
         <SafetyNumberModal
           myProfile={
             myProfile || {
-              uid: 'local_rapheal_vault',
-              displayName: displayFirstName,
-              handle: 'rapheal_ogar',
+              uid: activeMyUid,
+              displayName: activeDisplayName,
+              handle: activeHandle,
               statusText: myCustomStatus,
               publicKeyX:
                 guestKeyVault?.publicKeyX ||
@@ -1980,7 +2482,7 @@ function MainChatteraApp() {
               uid: selectedTarget.id,
               displayName: selectedTarget.name,
               handle: selectedTarget.handle,
-              statusText: 'Verified Chattera Contact',
+              statusText: 'Chattera Contact',
               publicKeyX: 'MKBCTNIcKUSDii11ySs3526iDZ8AiTo7Tu6KPAqv7D4',
               publicKeyY: '4Etl6SRW2YiLUrN5vfvVHuhp7x8PxltmWWlbbM4IFyM',
               keyFingerprint: selectedTarget.keyFingerprint,
@@ -1993,7 +2495,7 @@ function MainChatteraApp() {
         />
       )}
 
-      {/* New Chat / Contacts & Public Key Directory Picker Modal */}
+      {/* New Chat / Contacts Directory Picker Modal */}
       {newChatPickerOpen && (
         <div
           className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
@@ -2004,14 +2506,17 @@ function MainChatteraApp() {
             className="w-full max-w-md rounded-3xl p-6 space-y-4 border shadow-2xl max-h-[85vh] flex flex-col"
             style={{ background: 'var(--card)', borderColor: 'var(--border)' }}
           >
-            <div className="flex items-center justify-between border-b pb-3" style={{ borderColor: 'var(--border)' }}>
+            <div
+              className="flex items-center justify-between border-b pb-3"
+              style={{ borderColor: 'var(--border)' }}
+            >
               <div>
                 <h3 className="text-base font-bold flex items-center gap-1.5">
-                  <KeyRound className="w-4 h-4 text-[#5b4bdb]" />
-                  Start Encrypted Session
+                  <MessageCircle className="w-4 h-4 text-[#5b4bdb]" />
+                  Start a Conversation
                 </h3>
                 <p className="text-xs" style={{ color: 'var(--muted)' }}>
-                  Select a verified contact or cloud directory peer.
+                  Choose a contact or online user to message in real time.
                 </p>
               </div>
               <button
@@ -2037,13 +2542,13 @@ function MainChatteraApp() {
                 >
                   <div>
                     <div className="text-xs font-bold text-[#5b4bdb]">
-                      Personal E2EE Cloud Vault (Loopback)
+                      Personal Cloud Notes
                     </div>
                     <div className="text-[11px]" style={{ color: 'var(--muted)' }}>
-                      Test Firestore E2EE rules & packet sync
+                      Save notes and voice messages to your cloud account
                     </div>
                   </div>
-                  <Lock className="w-4 h-4 text-[#5b4bdb]" />
+                  <KeyRound className="w-4 h-4 text-[#5b4bdb]" />
                 </button>
               )}
 
@@ -2063,13 +2568,13 @@ function MainChatteraApp() {
                     <ChatteraAvatar name={peer.displayName} size={42} online />
                     <div className="flex-1 min-w-0">
                       <div className="text-xs font-bold truncate">
-                        {peer.displayName} (Cloud Peer)
+                        {peer.displayName}
                       </div>
                       <div
-                        className="text-[11px] font-mono truncate"
+                        className="text-[11px] truncate"
                         style={{ color: 'var(--muted)' }}
                       >
-                        @{peer.handle} · {peer.keyFingerprint.slice(0, 14)}…
+                        @{peer.handle} · Online
                       </div>
                     </div>
                   </button>
@@ -2098,10 +2603,10 @@ function MainChatteraApp() {
                   <div className="flex-1 min-w-0">
                     <div className="text-xs font-bold truncate">{c.name}</div>
                     <div
-                      className="text-[11px] font-mono truncate"
+                      className="text-[11px] truncate"
                       style={{ color: 'var(--muted)' }}
                     >
-                      @{c.handle} · {c.keyFingerprint.slice(0, 14)}…
+                      @{c.handle} · {c.online ? 'Active now' : 'Offline'}
                     </div>
                   </div>
                 </button>
