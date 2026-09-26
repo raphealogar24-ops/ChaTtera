@@ -3,14 +3,20 @@ import {
   ArrowLeft,
   CheckCheck,
   Code2,
+  CornerUpLeft,
   Flame,
+  Image as ImageIcon,
+  Info,
   KeyRound,
   Mic,
   Pause,
   Phone,
   Play,
+  Plus,
+  Search,
   Send,
   ShieldCheck,
+  Smile,
   Square,
   Timer,
   Trash2,
@@ -27,6 +33,7 @@ import {
   storeVoiceAudioBlob,
   synthesizeVoiceNoteWavDataUrl,
 } from '../utils/voiceAudio';
+import { ChatteraSeedContact } from '../chatteraData';
 
 export interface ActiveChatTarget {
   id: string;
@@ -44,7 +51,11 @@ interface ChatteraChatThreadProps {
   target: ActiveChatTarget;
   myUid: string;
   messages: DecryptedMessageView[];
+  contacts?: ChatteraSeedContact[];
   peerActivity?: 'typing' | 'recording' | 'idle';
+  peerActivitiesMap?: Record<string, 'typing' | 'recording' | 'idle'>;
+  onSelectContact?: (contact: ChatteraSeedContact) => void;
+  onOpenNewChatModal?: () => void;
   onBackMobile: () => void;
   onSendMessage: (plaintext: string) => Promise<void>;
   onRevokeMessage: (messageId: string) => Promise<void>;
@@ -56,22 +67,57 @@ interface ChatteraChatThreadProps {
   onOpenSafetyNumber: () => void;
   onQuickSendCashInChat: (amount: number, note: string) => Promise<void>;
   onTypingActivity?: (mode: 'typing' | 'recording' | 'idle') => void;
+  fullPageMode?: boolean;
 }
 
 interface ParsedMessagePayload {
-  kind: 'standard' | 'stealth' | 'payment' | 'voice';
+  kind: 'standard' | 'stealth' | 'payment' | 'voice' | 'image';
   burnSeconds?: number;
   amountNaira?: number;
   paymentRef?: string;
   voiceId?: string;
   voiceDurationSec?: number;
   voicePeaks?: number[];
+  imageUrl?: string;
+  replyQuote?: { senderName: string; snippet: string };
   body: string;
 }
 
+const QUICK_EMOJIS = ['😀', '😂', '❤️', '🔥', '🎉', '👏', '🙌', '✨', '👍', '🙏', '💯', '🚀'];
+const REACTION_EMOJIS = ['❤️', '🔥', '😂', '👍', '🎉'];
+
+const SAMPLE_SHARED_PHOTOS = [
+  {
+    label: 'Workspace Setup',
+    url: 'https://images.unsplash.com/photo-1498050108023-c5249f4df085?auto=format&fit=crop&w=900&q=80',
+  },
+  {
+    label: 'Design Mockup',
+    url: 'https://images.unsplash.com/photo-1558655146-d09347e92766?auto=format&fit=crop&w=900&q=80',
+  },
+  {
+    label: 'City Sunset',
+    url: 'https://images.unsplash.com/photo-1507525428034-b723cf961d3e?auto=format&fit=crop&w=900&q=80',
+  },
+];
+
 export function parseSpecialPayload(plaintext: string): ParsedMessagePayload {
-  if (plaintext.startsWith('[VOICE:')) {
-    const match = plaintext.match(/^\[VOICE:([^:]+):(\d+):([0-9,]+)\]([\s\S]*)$/);
+  let working = plaintext;
+  let replyQuote: { senderName: string; snippet: string } | undefined;
+
+  if (working.startsWith('[REPLY:')) {
+    const replyMatch = working.match(/^\[REPLY:([^:]+):([^\]]+)\]\s*([\s\S]*)$/);
+    if (replyMatch) {
+      replyQuote = {
+        senderName: replyMatch[1],
+        snippet: replyMatch[2],
+      };
+      working = replyMatch[3];
+    }
+  }
+
+  if (working.startsWith('[VOICE:')) {
+    const match = working.match(/^\[VOICE:([^:]+):(\d+):([0-9,]+)\]([\s\S]*)$/);
     if (match) {
       const peaks = match[3]
         .split(',')
@@ -81,33 +127,56 @@ export function parseSpecialPayload(plaintext: string): ParsedMessagePayload {
         kind: 'voice',
         voiceId: match[1],
         voiceDurationSec: Math.max(1, Number(match[2]) || 3),
-        voicePeaks: peaks.length > 0 ? peaks : [35, 65, 80, 45, 90, 70, 50, 85, 60, 40],
+        voicePeaks:
+          peaks.length > 0
+            ? peaks
+            : [35, 65, 80, 45, 90, 70, 50, 85, 60, 40],
         body: match[4].trim() || 'Voice message',
+        replyQuote,
       };
     }
   }
-  if (plaintext.startsWith('[STEALTH:')) {
-    const match = plaintext.match(/^\[STEALTH:(\d+)s\]([\s\S]*)$/);
+
+  if (working.startsWith('[IMG:')) {
+    const match = working.match(/^\[IMG:([^\]]+)\]([\s\S]*)$/);
+    if (match) {
+      return {
+        kind: 'image',
+        imageUrl: match[1].trim(),
+        body: match[2].trim() || 'Shared a photo',
+        replyQuote,
+      };
+    }
+  }
+
+  if (working.startsWith('[STEALTH:')) {
+    const match = working.match(/^\[STEALTH:(\d+)s\]([\s\S]*)$/);
     if (match) {
       return {
         kind: 'stealth',
         burnSeconds: Number(match[1]),
         body: match[2].trim(),
+        replyQuote,
       };
     }
   }
-  if (plaintext.startsWith('[CHT-PAY:')) {
-    const match = plaintext.match(/^\[CHT-PAY:(\d+):([^:]+):([^\]]+)\]([\s\S]*)$/);
+
+  if (working.startsWith('[CHT-PAY:')) {
+    const match = working.match(
+      /^\[CHT-PAY:(\d+):([^:]+):([^\]]+)\]([\s\S]*)$/
+    );
     if (match) {
       return {
         kind: 'payment',
         amountNaira: Number(match[1]),
         paymentRef: match[2],
         body: match[3].trim() || match[4].trim(),
+        replyQuote,
       };
     }
   }
-  return { kind: 'standard', body: plaintext };
+
+  return { kind: 'standard', body: working, replyQuote };
 }
 
 function formatAudioSeconds(sec: number): string {
@@ -217,14 +286,12 @@ const VoiceNoteBubblePlayer: React.FC<VoiceNoteBubblePlayerProps> = ({
     totalDuration > 0 ? Math.min(1, currentTime / totalDuration) : 0;
 
   return (
-    <div className="flex items-center gap-3 min-w-[230px] sm:min-w-[275px] py-1">
+    <div className="flex items-center gap-3 min-w-[220px] sm:min-w-[270px] py-1">
       <button
         type="button"
         onClick={() => void togglePlay()}
         className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 transition-transform active:scale-95 shadow-xs ${
-          isMine
-            ? 'bg-white text-[#5b4bdb]'
-            : 'bg-[#5b4bdb] text-white'
+          isMine ? 'bg-white text-[#5b4bdb]' : 'bg-[#5b4bdb] text-white'
         }`}
         aria-label={playing ? 'Pause voice message' : 'Play voice message'}
       >
@@ -240,7 +307,8 @@ const VoiceNoteBubblePlayer: React.FC<VoiceNoteBubblePlayerProps> = ({
         <div className="flex items-center gap-1 h-7">
           {peaks.map((peak, idx) => {
             const barRatio = idx / peaks.length;
-            const isPlayed = playing || currentTime > 0 ? barRatio <= progressRatio : false;
+            const isPlayed =
+              playing || currentTime > 0 ? barRatio <= progressRatio : false;
             const heightPct = Math.max(22, Math.min(100, peak));
             return (
               <button
@@ -270,9 +338,14 @@ const VoiceNoteBubblePlayer: React.FC<VoiceNoteBubblePlayerProps> = ({
         </div>
 
         <div className="flex items-center justify-between text-[11px] font-mono tabular-nums">
-          <span className={isMine ? 'text-white/85' : ''} style={!isMine ? { color: 'var(--muted)' } : undefined}>
+          <span
+            className={isMine ? 'text-white/85' : ''}
+            style={!isMine ? { color: 'var(--muted)' } : undefined}
+          >
             {playing || currentTime > 0
-              ? `${formatAudioSeconds(currentTime)} / ${formatAudioSeconds(totalDuration)}`
+              ? `${formatAudioSeconds(currentTime)} / ${formatAudioSeconds(
+                  totalDuration
+                )}`
               : `${formatAudioSeconds(totalDuration)} · Voice Note`}
           </span>
 
@@ -297,7 +370,11 @@ export const ChatteraChatThread: React.FC<ChatteraChatThreadProps> = ({
   target,
   myUid,
   messages,
+  contacts = [],
   peerActivity = 'idle',
+  peerActivitiesMap = {},
+  onSelectContact,
+  onOpenNewChatModal,
   onBackMobile,
   onSendMessage,
   onRevokeMessage,
@@ -306,15 +383,33 @@ export const ChatteraChatThread: React.FC<ChatteraChatThreadProps> = ({
   onOpenSafetyNumber,
   onQuickSendCashInChat,
   onTypingActivity,
+  fullPageMode = false,
 }) => {
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [stealthSeconds, setStealthSeconds] = useState<number | null>(null);
   const [xrayMode, setXrayMode] = useState(false);
-  const [expandedFrames, setExpandedFrames] = useState<Record<string, boolean>>({});
+  const [expandedFrames, setExpandedFrames] = useState<Record<string, boolean>>(
+    {}
+  );
   const [showCashBar, setShowCashBar] = useState(false);
   const [cashAmount, setCashAmount] = useState('5000');
   const [cashNote, setCashNote] = useState('Lunch & coffee');
+
+  // Rich Chatting Page UI State (Emojis, Reactions, Replies, Photo Attach, Search, Contact Info)
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [showPhotoPicker, setShowPhotoPicker] = useState(false);
+  const [replyingTo, setReplyingTo] = useState<{
+    id: string;
+    senderName: string;
+    snippet: string;
+  } | null>(null);
+  const [messageReactions, setMessageReactions] = useState<
+    Record<string, string[]>
+  >({});
+  const [inChatSearchOpen, setInChatSearchOpen] = useState(false);
+  const [inChatSearchQuery, setInChatSearchQuery] = useState('');
+  const [contactInfoOpen, setContactInfoOpen] = useState(false);
 
   // Voice Note Recording State
   const [isRecordingVoice, setIsRecordingVoice] = useState(false);
@@ -329,6 +424,7 @@ export const ChatteraChatThread: React.FC<ChatteraChatThreadProps> = ({
   const recordingTimerRef = useRef<number | null>(null);
   const collectedPeaksRef = useRef<number[]>([]);
   const typingTimeoutRef = useRef<number | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
@@ -336,7 +432,6 @@ export const ChatteraChatThread: React.FC<ChatteraChatThreadProps> = ({
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages.length, target.id, peerActivity]);
 
-  // Clean up any active recording on unmount
   useEffect(() => {
     return () => {
       stopRecordingResources();
@@ -405,7 +500,6 @@ export const ChatteraChatThread: React.FC<ChatteraChatThreadProps> = ({
       };
       recorder.start(200);
     } catch {
-      // Fallback for environments without physical microphone hardware
       mediaRecorderRef.current = null;
     }
 
@@ -422,7 +516,10 @@ export const ChatteraChatThread: React.FC<ChatteraChatThreadProps> = ({
           sum += freqData[i];
         }
         const avg = sum / freqData.length;
-        nextPeak = Math.max(24, Math.min(98, Math.round((avg / 160) * 100) + 20));
+        nextPeak = Math.max(
+          24,
+          Math.min(98, Math.round((avg / 160) * 100) + 20)
+        );
       }
 
       collectedPeaksRef.current.push(nextPeak);
@@ -444,7 +541,6 @@ export const ChatteraChatThread: React.FC<ChatteraChatThreadProps> = ({
         ? collectedPeaksRef.current
         : [38, 68, 84, 52, 90, 76, 62, 88, 55, 72, 48, 66];
 
-    // Normalize to 24 waveform bars for compact display
     const normalizedPeaks: number[] = [];
     for (let i = 0; i < 24; i++) {
       const idx = Math.min(
@@ -461,7 +557,9 @@ export const ChatteraChatThread: React.FC<ChatteraChatThreadProps> = ({
 
     setSending(true);
     try {
-      const voiceId = `vn_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const voiceId = `vn_${Date.now()}_${Math.random()
+        .toString(36)
+        .slice(2, 8)}`;
       let audioDataUrl = '';
 
       if (recordedChunksRef.current.length > 0) {
@@ -514,15 +612,49 @@ export const ChatteraChatThread: React.FC<ChatteraChatThreadProps> = ({
     if (!trimmed) return;
     setSending(true);
     onTypingActivity?.('idle');
+    setShowEmojiPicker(false);
     try {
-      const payload = stealthSeconds
+      let payload = stealthSeconds
         ? `[STEALTH:${stealthSeconds}s] ${trimmed}`
         : trimmed;
+
+      if (replyingTo) {
+        const cleanSender = replyingTo.senderName.replace(/[:[\]]/g, '');
+        const cleanSnippet = replyingTo.snippet
+          .slice(0, 50)
+          .replace(/[:[\]]/g, '');
+        payload = `[REPLY:${cleanSender}:${cleanSnippet}] ${payload}`;
+      }
+
       await onSendMessage(payload);
       setDraft('');
+      setReplyingTo(null);
     } finally {
       setSending(false);
     }
+  };
+
+  const handleSendPhotoUrl = async (url: string, caption: string) => {
+    setSending(true);
+    setShowPhotoPicker(false);
+    try {
+      await onSendMessage(`[IMG:${url}] ${caption}`);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const handleLocalImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      if (typeof reader.result === 'string') {
+        void handleSendPhotoUrl(reader.result, file.name.replace(/\.[^.]+$/, ''));
+      }
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
   };
 
   const handleCashSubmit = async (e: React.FormEvent) => {
@@ -538,14 +670,98 @@ export const ChatteraChatThread: React.FC<ChatteraChatThreadProps> = ({
     }
   };
 
+  const toggleReaction = (msgId: string, emoji: string) => {
+    setMessageReactions((prev) => {
+      const existing = prev[msgId] || [];
+      const exists = existing.includes(emoji);
+      const next = exists
+        ? existing.filter((e) => e !== emoji)
+        : [...existing, emoji];
+      return { ...prev, [msgId]: next };
+    });
+  };
+
+  const displayedMessages = inChatSearchQuery.trim()
+    ? messages.filter((m) =>
+        m.plaintext
+          .toLowerCase()
+          .includes(inChatSearchQuery.trim().toLowerCase())
+      )
+    : messages;
+
   return (
     <div
-      className="flex flex-col h-full min-h-[540px] rounded-3xl border overflow-hidden shadow-sm"
+      className="flex flex-col h-full min-h-[560px] rounded-3xl border overflow-hidden shadow-sm relative"
       style={{ background: 'var(--card)', borderColor: 'var(--border)' }}
     >
+      {/* Quick Contact Switcher Strip (Visible on Mobile / Full-Page Chat Mode) */}
+      {contacts.length > 0 && (
+        <div
+          className={`${
+            fullPageMode ? 'flex' : 'flex lg:hidden'
+          } items-center gap-2 px-3.5 py-2.5 border-b overflow-x-auto no-scrollbar`}
+          style={{
+            background: 'var(--bg)',
+            borderColor: 'var(--border)',
+          }}
+        >
+          {contacts.map((c) => {
+            const isCurrent = !target.isFirestoreBacked && target.id === c.id;
+            const act = peerActivitiesMap[c.id];
+            return (
+              <button
+                key={c.id}
+                type="button"
+                onClick={() => onSelectContact?.(c)}
+                className="flex items-center gap-2 px-3 py-1.5 rounded-2xl border shrink-0 transition-all active:scale-95"
+                style={{
+                  background: isCurrent ? 'var(--primary)' : 'var(--card)',
+                  color: isCurrent ? '#ffffff' : 'var(--text)',
+                  borderColor: isCurrent ? 'var(--primary)' : 'var(--border)',
+                }}
+              >
+                <ChatteraAvatar
+                  name={c.name}
+                  src={c.avatarUrl}
+                  size={24}
+                  online={c.online}
+                />
+                <span className="text-xs font-bold whitespace-nowrap">
+                  {c.name.split(' ')[0]}
+                </span>
+                {act && act !== 'idle' && (
+                  <span className="w-2 h-2 rounded-full bg-[#21c47b] animate-ping" />
+                )}
+                {c.unreadCount > 0 && !isCurrent && (
+                  <span className="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-[#5b4bdb] text-white">
+                    {c.unreadCount}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+
+          {onOpenNewChatModal && (
+            <button
+              type="button"
+              onClick={onOpenNewChatModal}
+              className="flex items-center gap-1 px-3 py-1.5 rounded-2xl border shrink-0 text-xs font-semibold"
+              style={{
+                background: 'var(--card)',
+                borderColor: 'var(--border)',
+                color: 'var(--primary)',
+              }}
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>More</span>
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Conversation Header */}
       <div
-        className="px-4 py-3.5 border-b flex items-center justify-between gap-2 sticky top-0 z-10"
+        className="px-4 py-3 border-b flex items-center justify-between gap-2 sticky top-0 z-10"
         style={{ background: 'var(--card)', borderColor: 'var(--border)' }}
       >
         <div className="flex items-center gap-3 min-w-0">
@@ -554,51 +770,80 @@ export const ChatteraChatThread: React.FC<ChatteraChatThreadProps> = ({
             onClick={onBackMobile}
             className="lg:hidden w-9 h-9 rounded-xl flex items-center justify-center shrink-0"
             style={{ background: 'var(--icon-bg)' }}
-            aria-label="Back to chats"
+            aria-label="Back to chats list"
           >
             <ArrowLeft className="w-4 h-4" />
           </button>
 
-          <ChatteraAvatar
-            name={target.name}
-            src={target.avatarUrl}
-            size={44}
-            online={target.online}
-          />
+          <button
+            type="button"
+            onClick={() => setContactInfoOpen(!contactInfoOpen)}
+            className="flex items-center gap-3 min-w-0 text-left group"
+          >
+            <ChatteraAvatar
+              name={target.name}
+              src={target.avatarUrl}
+              size={44}
+              online={target.online}
+            />
 
-          <div className="min-w-0">
-            <div className="flex items-center gap-1.5">
-              <h3 className="text-sm font-bold truncate">{target.name}</h3>
-              <ShieldCheck className="w-3.5 h-3.5 text-[#21c47b] shrink-0" />
-            </div>
-            <div
-              className="text-xs flex items-center gap-1.5 truncate"
-              style={{
-                color:
-                  peerActivity !== 'idle' ? 'var(--primary)' : 'var(--muted)',
-              }}
-            >
-              {peerActivity === 'typing' ? (
-                <span className="font-semibold animate-pulse">typing a message…</span>
-              ) : peerActivity === 'recording' ? (
-                <span className="font-semibold animate-pulse">
-                  recording a voice message…
-                </span>
-              ) : (
-                <>
-                  <span>@{target.handle}</span>
-                  <span aria-hidden="true">·</span>
-                  <span className={target.online ? 'text-[#21c47b] font-medium' : ''}>
-                    {target.online ? 'Active now' : 'Offline'}
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5">
+                <h3 className="text-sm font-bold truncate group-hover:underline">
+                  {target.name}
+                </h3>
+                <ShieldCheck className="w-3.5 h-3.5 text-[#21c47b] shrink-0" />
+              </div>
+              <div
+                className="text-xs flex items-center gap-1.5 truncate"
+                style={{
+                  color:
+                    peerActivity !== 'idle' ? 'var(--primary)' : 'var(--muted)',
+                }}
+              >
+                {peerActivity === 'typing' ? (
+                  <span className="font-semibold animate-pulse">
+                    typing a message…
                   </span>
-                </>
-              )}
+                ) : peerActivity === 'recording' ? (
+                  <span className="font-semibold animate-pulse">
+                    🎤 recording a voice message…
+                  </span>
+                ) : (
+                  <>
+                    <span>@{target.handle}</span>
+                    <span aria-hidden="true">·</span>
+                    <span
+                      className={
+                        target.online ? 'text-[#21c47b] font-medium' : ''
+                      }
+                    >
+                      {target.online ? 'Active now' : 'Offline'}
+                    </span>
+                  </>
+                )}
+              </div>
             </div>
-          </div>
+          </button>
         </div>
 
-        {/* Call & Security Actions */}
+        {/* Call, Search & Info Actions */}
         <div className="flex items-center gap-1.5 shrink-0">
+          <button
+            type="button"
+            onClick={() => setInChatSearchOpen(!inChatSearchOpen)}
+            className="w-9 h-9 rounded-xl flex items-center justify-center transition-colors"
+            style={{
+              background: inChatSearchOpen
+                ? 'var(--soft-tint)'
+                : 'var(--icon-bg)',
+              color: inChatSearchOpen ? 'var(--primary)' : 'var(--text)',
+            }}
+            title="Search in conversation"
+          >
+            <Search className="w-4 h-4" />
+          </button>
+
           <button
             type="button"
             onClick={() => onStartCall('audio')}
@@ -621,238 +866,601 @@ export const ChatteraChatThread: React.FC<ChatteraChatThreadProps> = ({
 
           <button
             type="button"
-            onClick={onOpenSafetyNumber}
+            onClick={() => setContactInfoOpen(!contactInfoOpen)}
             className="w-9 h-9 rounded-xl flex items-center justify-center transition-colors"
-            style={{ background: 'var(--icon-bg)', color: 'var(--primary)' }}
-            title="Verify Safety Number"
+            style={{
+              background: contactInfoOpen
+                ? 'var(--soft-tint)'
+                : 'var(--icon-bg)',
+              color: contactInfoOpen ? 'var(--primary)' : 'var(--text)',
+            }}
+            title="Contact Info & Shared Media"
           >
-            <KeyRound className="w-4 h-4" />
+            <Info className="w-4 h-4" />
           </button>
 
           <button
             type="button"
             onClick={() => setXrayMode(!xrayMode)}
-            className="px-2.5 h-9 rounded-xl flex items-center gap-1 text-[11px] font-semibold transition-colors whitespace-nowrap"
+            className="hidden sm:inline-flex px-2.5 h-9 rounded-xl items-center gap-1 text-[11px] font-semibold transition-colors whitespace-nowrap"
             style={{
               background: xrayMode ? 'var(--primary)' : 'var(--icon-bg)',
               color: xrayMode ? '#ffffff' : 'var(--text)',
             }}
-            title="Inspect Encrypted Packet Details"
+            title="Inspect Packet Details"
           >
             <Code2 className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Details</span>
+            <span>Details</span>
           </button>
         </div>
       </div>
 
-      {/* Message Stream */}
-      <div
-        className="flex-1 overflow-y-auto p-4 space-y-3.5"
-        style={{ background: 'var(--bg)' }}
-      >
-        {messages.map((msg) => {
-          const isMine = msg.senderId === myUid;
-          const isRevoked = msg.deliveryStatus === 'revoked';
-          const parsed = parseSpecialPayload(msg.plaintext);
-          const showPacket = xrayMode || Boolean(expandedFrames[msg.id]);
-
-          const timeLabel =
-            msg.createdAt && typeof msg.createdAt.toDate === 'function'
-              ? msg.createdAt
-                  .toDate()
-                  .toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-              : 'Just now';
-
-          return (
-            <div
-              key={msg.id}
-              className={`flex flex-col ${isMine ? 'items-end' : 'items-start'}`}
+      {/* In-Conversation Search Bar */}
+      {inChatSearchOpen && (
+        <div
+          className="px-4 py-2 border-b flex items-center gap-2"
+          style={{ background: 'var(--bg)', borderColor: 'var(--border)' }}
+        >
+          <Search className="w-3.5 h-3.5" style={{ color: 'var(--muted)' }} />
+          <input
+            type="text"
+            value={inChatSearchQuery}
+            onChange={(e) => setInChatSearchQuery(e.target.value)}
+            placeholder={`Search messages with ${target.name}…`}
+            className="flex-1 text-xs bg-transparent focus:outline-none"
+            style={{ color: 'var(--text)' }}
+          />
+          {inChatSearchQuery && (
+            <button
+              type="button"
+              onClick={() => setInChatSearchQuery('')}
+              className="text-xs font-semibold"
+              style={{ color: 'var(--muted)' }}
             >
-              <div
-                className="max-w-[85%] sm:max-w-[75%] rounded-2xl p-3.5 space-y-2 shadow-xs border"
-                style={{
-                  background: isMine
-                    ? 'linear-gradient(135deg, #5b4bdb, #4737c6)'
-                    : 'var(--card)',
-                  color: isMine ? '#ffffff' : 'var(--text)',
-                  borderColor: isMine ? 'transparent' : 'var(--border)',
-                }}
-              >
-                {/* Disappearing Message Header */}
-                {parsed.kind === 'stealth' && !isRevoked && (
-                  <div
-                    className={`flex items-center justify-between gap-3 text-[11px] pb-1.5 border-b ${
-                      isMine
-                        ? 'border-white/20 text-amber-200'
-                        : 'border-slate-200 dark:border-slate-700 text-amber-500'
-                    }`}
-                  >
-                    <span className="inline-flex items-center gap-1 font-semibold">
-                      <Flame className="w-3.5 h-3.5" />
-                      Disappearing Message ({parsed.burnSeconds}s timer)
-                    </span>
-                    {isMine && (
-                      <button
-                        type="button"
-                        onClick={() => void onRevokeMessage(msg.id)}
-                        className="underline font-bold"
-                      >
-                        Unsend Now
-                      </button>
-                    )}
-                  </div>
-                )}
+              Clear
+            </button>
+          )}
+        </div>
+      )}
 
-                {/* Voice Message Player */}
-                {parsed.kind === 'voice' && !isRevoked ? (
-                  <VoiceNoteBubblePlayer
-                    voiceId={parsed.voiceId || msg.id}
-                    durationSec={parsed.voiceDurationSec || 4}
-                    peaks={
-                      parsed.voicePeaks || [
-                        35, 65, 80, 45, 90, 70, 50, 85, 60, 40,
-                      ]
-                    }
-                    isMine={isMine}
-                  />
-                ) : parsed.kind === 'payment' && !isRevoked ? (
-                  /* In-Chat Naira Transfer Bubble */
-                  <div className="p-3 rounded-xl bg-black/20 border border-white/15 space-y-1.5">
-                    <div className="flex items-center justify-between text-[11px] opacity-85">
-                      <span className="inline-flex items-center gap-1 font-semibold">
-                        <Wallet className="w-3.5 h-3.5" />
-                        Chattera Instant Transfer
-                      </span>
-                      <span className="font-mono">{parsed.paymentRef}</span>
-                    </div>
-                    <div className="text-xl font-bold font-mono tabular-nums">
-                      ₦{(parsed.amountNaira || 0).toLocaleString()}.00
-                    </div>
-                    <div className="text-xs opacity-90">{parsed.body}</div>
-                  </div>
-                ) : (
-                  /* Standard Text Bubble */
-                  <div
-                    className={`text-sm leading-relaxed break-words whitespace-pre-wrap ${
-                      isRevoked ? 'italic opacity-70 text-xs' : ''
-                    }`}
-                  >
-                    {parsed.body}
-                  </div>
-                )}
-
-                {/* Message Metadata Footer */}
-                <div
-                  className={`flex items-center justify-between gap-3 text-[10px] pt-1 ${
-                    isMine ? 'text-white/75' : ''
-                  }`}
-                  style={!isMine ? { color: 'var(--muted)' } : undefined}
-                >
-                  <div className="flex items-center gap-1.5 tabular-nums">
-                    <span>{timeLabel}</span>
-                    <span aria-hidden="true">·</span>
-                    <span className="capitalize">
-                      {msg.deliveryStatus === 'verified'
-                        ? 'Read'
-                        : msg.deliveryStatus}
-                    </span>
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    {xrayMode && (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setExpandedFrames((prev) => ({
-                            ...prev,
-                            [msg.id]: !prev[msg.id],
-                          }))
-                        }
-                        className="hover:underline font-medium"
-                      >
-                        {showPacket ? 'Hide Info' : 'Info'}
-                      </button>
-                    )}
-
-                    {!isMine &&
-                      !isRevoked &&
-                      msg.deliveryStatus !== 'verified' && (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            void onAcknowledgeMessage(msg.id, 'verified')
-                          }
-                          className="inline-flex items-center gap-0.5 font-semibold hover:underline"
-                        >
-                          <CheckCheck className="w-3 h-3" />
-                          Mark Read
-                        </button>
-                      )}
-
-                    {isMine && !isRevoked && (
-                      <button
-                        type="button"
-                        onClick={() => void onRevokeMessage(msg.id)}
-                        className="inline-flex items-center gap-0.5 hover:underline opacity-80 hover:opacity-100"
-                        title="Unsend message"
-                      >
-                        <Trash2 className="w-3 h-3" />
-                        Unsend
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                {/* Optional Packet Inspector Drawer */}
-                {showPacket && (
-                  <div className="p-2.5 rounded-xl bg-black/30 border border-white/15 text-[10px] font-mono space-y-1 break-all">
-                    <div className="flex items-center justify-between opacity-80">
-                      <span>Suite: {msg.algorithm}</span>
-                      <span>IV: {base64ToHex(msg.iv)}</span>
-                    </div>
-                    <div className="opacity-90">
-                      Ciphertext: {msg.ciphertext.slice(0, 96)}…
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          );
-        })}
-
-        {/* Live Peer Typing / Recording Bubble */}
-        {peerActivity !== 'idle' && (
-          <div className="flex items-start">
-            <div
-              className="px-4 py-2.5 rounded-2xl border text-xs font-medium flex items-center gap-2 shadow-2xs"
+      {/* Main Chat Body + Optional Contact Info Drawer */}
+      <div className="flex-1 flex overflow-hidden relative">
+        {/* Message Stream */}
+        <div
+          className="flex-1 overflow-y-auto p-4 space-y-3.5"
+          style={{ background: 'var(--bg)' }}
+        >
+          {/* Date Header Chip */}
+          <div className="flex justify-center">
+            <span
+              className="px-3 py-1 rounded-full text-[11px] font-medium border"
               style={{
                 background: 'var(--card)',
                 borderColor: 'var(--border)',
                 color: 'var(--muted)',
               }}
             >
-              <span className="w-2 h-2 rounded-full bg-[#21c47b] animate-ping" />
-              <span>
-                {target.name} is{' '}
-                {peerActivity === 'recording'
-                  ? 'recording a voice message…'
-                  : 'typing…'}
-              </span>
-            </div>
+              Today · Real-Time Chat with {target.name}
+            </span>
           </div>
-        )}
 
-        <div ref={bottomRef} />
+          {displayedMessages.map((msg) => {
+            const isMine = msg.senderId === myUid;
+            const isRevoked = msg.deliveryStatus === 'revoked';
+            const parsed = parseSpecialPayload(msg.plaintext);
+            const showPacket = xrayMode || Boolean(expandedFrames[msg.id]);
+            const reactions = messageReactions[msg.id] || [];
+
+            const timeLabel =
+              msg.createdAt && typeof msg.createdAt.toDate === 'function'
+                ? msg.createdAt
+                    .toDate()
+                    .toLocaleTimeString([], {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })
+                : 'Just now';
+
+            return (
+              <div
+                key={msg.id}
+                className={`group flex flex-col ${
+                  isMine ? 'items-end' : 'items-start'
+                }`}
+              >
+                <div className="flex items-end gap-2 max-w-[88%] sm:max-w-[76%]">
+                  {!isMine && (
+                    <ChatteraAvatar
+                      name={target.name}
+                      src={target.avatarUrl}
+                      size={28}
+                      className="mb-1 shrink-0 hidden sm:inline-flex"
+                    />
+                  )}
+
+                  <div
+                    className="rounded-2xl p-3.5 space-y-2 shadow-xs border relative"
+                    style={{
+                      background: isMine
+                        ? 'linear-gradient(135deg, #5b4bdb, #4737c6)'
+                        : 'var(--card)',
+                      color: isMine ? '#ffffff' : 'var(--text)',
+                      borderColor: isMine ? 'transparent' : 'var(--border)',
+                    }}
+                  >
+                    {/* Reply Quote Header if this message is a reply */}
+                    {parsed.replyQuote && !isRevoked && (
+                      <div
+                        className={`p-2 rounded-xl border-l-4 text-xs ${
+                          isMine
+                            ? 'bg-black/20 border-white/70 text-white/90'
+                            : 'bg-black/5 dark:bg-white/5 border-[#5b4bdb]'
+                        }`}
+                      >
+                        <div className="font-bold text-[10px]">
+                          {parsed.replyQuote.senderName}
+                        </div>
+                        <div className="truncate opacity-85 text-[11px]">
+                          {parsed.replyQuote.snippet}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Disappearing Message Header */}
+                    {parsed.kind === 'stealth' && !isRevoked && (
+                      <div
+                        className={`flex items-center justify-between gap-3 text-[11px] pb-1.5 border-b ${
+                          isMine
+                            ? 'border-white/20 text-amber-200'
+                            : 'border-slate-200 dark:border-slate-700 text-amber-500'
+                        }`}
+                      >
+                        <span className="inline-flex items-center gap-1 font-semibold">
+                          <Flame className="w-3.5 h-3.5" />
+                          Disappearing ({parsed.burnSeconds}s timer)
+                        </span>
+                        {isMine && (
+                          <button
+                            type="button"
+                            onClick={() => void onRevokeMessage(msg.id)}
+                            className="underline font-bold"
+                          >
+                            Unsend
+                          </button>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Voice Message Player */}
+                    {parsed.kind === 'voice' && !isRevoked ? (
+                      <VoiceNoteBubblePlayer
+                        voiceId={parsed.voiceId || msg.id}
+                        durationSec={parsed.voiceDurationSec || 4}
+                        peaks={
+                          parsed.voicePeaks || [
+                            35, 65, 80, 45, 90, 70, 50, 85, 60, 40,
+                          ]
+                        }
+                        isMine={isMine}
+                      />
+                    ) : parsed.kind === 'image' &&
+                      parsed.imageUrl &&
+                      !isRevoked ? (
+                      /* Shared Photo Bubble */
+                      <div className="space-y-1.5">
+                        <img
+                          src={parsed.imageUrl}
+                          alt={parsed.body}
+                          className="rounded-xl max-h-60 w-full object-cover border border-white/10"
+                        />
+                        {parsed.body && (
+                          <div className="text-xs opacity-90">{parsed.body}</div>
+                        )}
+                      </div>
+                    ) : parsed.kind === 'payment' && !isRevoked ? (
+                      /* In-Chat Naira Transfer Bubble */
+                      <div className="p-3 rounded-xl bg-black/20 border border-white/15 space-y-1.5">
+                        <div className="flex items-center justify-between text-[11px] opacity-85">
+                          <span className="inline-flex items-center gap-1 font-semibold">
+                            <Wallet className="w-3.5 h-3.5" />
+                            Chattera Instant Transfer
+                          </span>
+                          <span className="font-mono">{parsed.paymentRef}</span>
+                        </div>
+                        <div className="text-xl font-bold font-mono tabular-nums">
+                          ₦{(parsed.amountNaira || 0).toLocaleString()}.00
+                        </div>
+                        <div className="text-xs opacity-90">{parsed.body}</div>
+                      </div>
+                    ) : (
+                      /* Standard Text Bubble */
+                      <div
+                        className={`text-sm leading-relaxed break-words whitespace-pre-wrap ${
+                          isRevoked ? 'italic opacity-70 text-xs' : ''
+                        }`}
+                      >
+                        {parsed.body}
+                      </div>
+                    )}
+
+                    {/* Quick Reaction Bar + Reply Action */}
+                    {!isRevoked && (
+                      <div
+                        className={`flex items-center justify-between gap-2 pt-1 border-t ${
+                          isMine
+                            ? 'border-white/15'
+                            : 'border-black/5 dark:border-white/5'
+                        }`}
+                      >
+                        <div className="flex items-center gap-1">
+                          {REACTION_EMOJIS.map((emoji) => {
+                            const active = reactions.includes(emoji);
+                            return (
+                              <button
+                                key={emoji}
+                                type="button"
+                                onClick={() => toggleReaction(msg.id, emoji)}
+                                className={`text-xs px-1.5 py-0.5 rounded-lg transition-transform active:scale-90 ${
+                                  active
+                                    ? 'bg-white/25 scale-105 font-bold'
+                                    : 'opacity-65 hover:opacity-100'
+                                }`}
+                                title={`React with ${emoji}`}
+                              >
+                                {emoji}
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setReplyingTo({
+                              id: msg.id,
+                              senderName: isMine ? 'You' : target.name,
+                              snippet:
+                                parsed.kind === 'voice'
+                                  ? '🎤 Voice message'
+                                  : parsed.kind === 'image'
+                                  ? '📷 Photo'
+                                  : parsed.body,
+                            })
+                          }
+                          className="inline-flex items-center gap-1 text-[10px] font-semibold opacity-80 hover:opacity-100"
+                          title="Reply to this message"
+                        >
+                          <CornerUpLeft className="w-3 h-3" />
+                          <span>Reply</span>
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Selected Reactions Display */}
+                    {reactions.length > 0 && (
+                      <div className="flex flex-wrap gap-1 pt-0.5">
+                        {reactions.map((em) => (
+                          <span
+                            key={em}
+                            className="px-2 py-0.5 rounded-full text-xs bg-black/20 border border-white/20"
+                          >
+                            {em} 1
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Message Metadata Footer */}
+                    <div
+                      className={`flex items-center justify-between gap-3 text-[10px] pt-0.5 ${
+                        isMine ? 'text-white/75' : ''
+                      }`}
+                      style={!isMine ? { color: 'var(--muted)' } : undefined}
+                    >
+                      <div className="flex items-center gap-1.5 tabular-nums">
+                        <span>{timeLabel}</span>
+                        <span aria-hidden="true">·</span>
+                        <span className="capitalize">
+                          {msg.deliveryStatus === 'verified'
+                            ? 'Read'
+                            : msg.deliveryStatus}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        {xrayMode && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setExpandedFrames((prev) => ({
+                                ...prev,
+                                [msg.id]: !prev[msg.id],
+                              }))
+                            }
+                            className="hover:underline font-medium"
+                          >
+                            {showPacket ? 'Hide Info' : 'Info'}
+                          </button>
+                        )}
+
+                        {!isMine &&
+                          !isRevoked &&
+                          msg.deliveryStatus !== 'verified' && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                void onAcknowledgeMessage(msg.id, 'verified')
+                              }
+                              className="inline-flex items-center gap-0.5 font-semibold hover:underline"
+                            >
+                              <CheckCheck className="w-3 h-3" />
+                              Mark Read
+                            </button>
+                          )}
+
+                        {isMine && !isRevoked && (
+                          <button
+                            type="button"
+                            onClick={() => void onRevokeMessage(msg.id)}
+                            className="inline-flex items-center gap-0.5 hover:underline opacity-80 hover:opacity-100"
+                            title="Unsend message"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                            Unsend
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Optional Packet Inspector Drawer */}
+                    {showPacket && (
+                      <div className="p-2.5 rounded-xl bg-black/30 border border-white/15 text-[10px] font-mono space-y-1 break-all">
+                        <div className="flex items-center justify-between opacity-80">
+                          <span>Suite: {msg.algorithm}</span>
+                          <span>IV: {base64ToHex(msg.iv)}</span>
+                        </div>
+                        <div className="opacity-90">
+                          Ciphertext: {msg.ciphertext.slice(0, 96)}…
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+
+          {/* Live Peer Typing / Recording Bubble */}
+          {peerActivity !== 'idle' && (
+            <div className="flex items-start">
+              <div
+                className="px-4 py-2.5 rounded-2xl border text-xs font-medium flex items-center gap-2 shadow-2xs"
+                style={{
+                  background: 'var(--card)',
+                  borderColor: 'var(--border)',
+                  color: 'var(--muted)',
+                }}
+              >
+                <span className="w-2 h-2 rounded-full bg-[#21c47b] animate-ping" />
+                <span>
+                  {target.name} is{' '}
+                  {peerActivity === 'recording'
+                    ? 'recording a voice message…'
+                    : 'typing…'}
+                </span>
+              </div>
+            </div>
+          )}
+
+          <div ref={bottomRef} />
+        </div>
+
+        {/* Contact Info Slide-Over Drawer */}
+        {contactInfoOpen && (
+          <aside
+            className="w-72 border-l p-4 overflow-y-auto space-y-4 shrink-0"
+            style={{ background: 'var(--card)', borderColor: 'var(--border)' }}
+          >
+            <div className="flex items-center justify-between">
+              <h4 className="text-xs font-bold uppercase tracking-wider" style={{ color: 'var(--muted)' }}>
+                Contact Details
+              </h4>
+              <button
+                type="button"
+                onClick={() => setContactInfoOpen(false)}
+                className="p-1 rounded-lg"
+                style={{ background: 'var(--icon-bg)' }}
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            <div className="text-center space-y-2 pt-2">
+              <ChatteraAvatar
+                name={target.name}
+                src={target.avatarUrl}
+                size={68}
+                online={target.online}
+                className="mx-auto"
+              />
+              <div>
+                <div className="text-base font-bold">{target.name}</div>
+                <div className="text-xs" style={{ color: 'var(--muted)' }}>
+                  @{target.handle}
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => onStartCall('audio')}
+                className="p-2.5 rounded-2xl border text-center space-y-1"
+                style={{ background: 'var(--bg)', borderColor: 'var(--border)' }}
+              >
+                <Phone className="w-4 h-4 mx-auto text-[#5b4bdb]" />
+                <span className="block text-[10px] font-semibold">Audio</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => onStartCall('video')}
+                className="p-2.5 rounded-2xl border text-center space-y-1"
+                style={{ background: 'var(--bg)', borderColor: 'var(--border)' }}
+              >
+                <Video className="w-4 h-4 mx-auto text-[#5b4bdb]" />
+                <span className="block text-[10px] font-semibold">Video</span>
+              </button>
+              <button
+                type="button"
+                onClick={onOpenSafetyNumber}
+                className="p-2.5 rounded-2xl border text-center space-y-1"
+                style={{ background: 'var(--bg)', borderColor: 'var(--border)' }}
+              >
+                <KeyRound className="w-4 h-4 mx-auto text-[#21c47b]" />
+                <span className="block text-[10px] font-semibold">Verify</span>
+              </button>
+            </div>
+
+            <div
+              className="p-3 rounded-2xl border space-y-1 text-xs"
+              style={{ background: 'var(--bg)', borderColor: 'var(--border)' }}
+            >
+              <div className="font-semibold">Chat Statistics</div>
+              <div style={{ color: 'var(--muted)' }}>
+                Total messages: {messages.length}
+              </div>
+              <div style={{ color: 'var(--muted)' }}>
+                Voice notes:{' '}
+                {
+                  messages.filter((m) => m.plaintext.startsWith('[VOICE:'))
+                    .length
+                }
+              </div>
+            </div>
+          </aside>
+        )}
       </div>
+
+      {/* Reply Banner if quoting a message */}
+      {replyingTo && (
+        <div
+          className="px-4 py-2 border-t flex items-center justify-between gap-2 text-xs"
+          style={{
+            background: 'var(--soft-tint)',
+            borderColor: 'var(--border)',
+          }}
+        >
+          <div className="min-w-0">
+            <span className="font-bold text-[#5b4bdb]">
+              Replying to {replyingTo.senderName}:{' '}
+            </span>
+            <span className="truncate" style={{ color: 'var(--muted)' }}>
+              {replyingTo.snippet}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setReplyingTo(null)}
+            className="p-1 rounded-lg"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* Photo Attachment Picker Drawer */}
+      {showPhotoPicker && (
+        <div
+          className="px-4 py-3 border-t space-y-2.5"
+          style={{ background: 'var(--bg)', borderColor: 'var(--border)' }}
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold">Share a Photo in Chat</span>
+            <button
+              type="button"
+              onClick={() => setShowPhotoPicker(false)}
+              className="text-xs"
+              style={{ color: 'var(--muted)' }}
+            >
+              Close
+            </button>
+          </div>
+          <div className="flex items-center gap-2.5 overflow-x-auto pb-1">
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="h-20 px-4 rounded-2xl border border-dashed flex flex-col items-center justify-center gap-1 text-xs font-semibold shrink-0"
+              style={{
+                background: 'var(--card)',
+                borderColor: 'var(--primary)',
+                color: 'var(--primary)',
+              }}
+            >
+              <ImageIcon className="w-5 h-5" />
+              <span>Upload Photo</span>
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              onChange={handleLocalImageUpload}
+              className="hidden"
+            />
+            {SAMPLE_SHARED_PHOTOS.map((item) => (
+              <button
+                key={item.label}
+                type="button"
+                onClick={() => void handleSendPhotoUrl(item.url, item.label)}
+                className="relative h-20 w-28 rounded-2xl overflow-hidden border shrink-0 group"
+                style={{ borderColor: 'var(--border)' }}
+              >
+                <img
+                  src={item.url}
+                  alt={item.label}
+                  className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                />
+                <span className="absolute inset-x-0 bottom-0 bg-black/60 text-white text-[10px] py-0.5 px-1.5 truncate">
+                  {item.label}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Emoji Picker Bar */}
+      {showEmojiPicker && (
+        <div
+          className="px-4 py-2.5 border-t flex items-center gap-2 overflow-x-auto no-scrollbar"
+          style={{ background: 'var(--bg)', borderColor: 'var(--border)' }}
+        >
+          {QUICK_EMOJIS.map((em) => (
+            <button
+              key={em}
+              type="button"
+              onClick={() => setDraft((prev) => `${prev}${em}`)}
+              className="text-lg hover:scale-125 transition-transform px-1"
+            >
+              {em}
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* Optional Quick In-Chat Cash Transfer Bar */}
       {showCashBar && (
         <form
           onSubmit={(e) => void handleCashSubmit(e)}
           className="px-4 py-3 border-t flex flex-wrap items-center gap-2"
-          style={{ background: 'var(--soft-tint)', borderColor: 'var(--border)' }}
+          style={{
+            background: 'var(--soft-tint)',
+            borderColor: 'var(--border)',
+          }}
         >
-          <span className="text-xs font-bold" style={{ color: 'var(--primary)' }}>
+          <span
+            className="text-xs font-bold"
+            style={{ color: 'var(--primary)' }}
+          >
             Send ₦ in Chat:
           </span>
           <input
@@ -890,14 +1498,50 @@ export const ChatteraChatThread: React.FC<ChatteraChatThreadProps> = ({
         </form>
       )}
 
-      {/* Composer Bar with Voice Recorder, Disappearing Timer & Money Transfer */}
+      {/* Composer Bar with Voice Recorder, Emojis, Photo Attach, Disappearing Timer & Money Transfer */}
       <form
         onSubmit={(e) => void handleSubmit(e)}
         className="p-3 border-t space-y-2"
         style={{ background: 'var(--card)', borderColor: 'var(--border)' }}
       >
         <div className="flex items-center justify-between gap-2 px-1">
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+            <button
+              type="button"
+              onClick={() => {
+                setShowEmojiPicker(!showEmojiPicker);
+                setShowPhotoPicker(false);
+              }}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-[11px] font-semibold transition-colors whitespace-nowrap"
+              style={{
+                background: showEmojiPicker
+                  ? 'var(--soft-tint)'
+                  : 'var(--icon-bg)',
+                color: showEmojiPicker ? 'var(--primary)' : 'var(--muted)',
+              }}
+            >
+              <Smile className="w-3.5 h-3.5" />
+              <span>Emoji</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setShowPhotoPicker(!showPhotoPicker);
+                setShowEmojiPicker(false);
+              }}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-[11px] font-semibold transition-colors whitespace-nowrap"
+              style={{
+                background: showPhotoPicker
+                  ? 'var(--soft-tint)'
+                  : 'var(--icon-bg)',
+                color: showPhotoPicker ? 'var(--primary)' : 'var(--muted)',
+              }}
+            >
+              <ImageIcon className="w-3.5 h-3.5" />
+              <span>Photo</span>
+            </button>
+
             <button
               type="button"
               onClick={() =>
@@ -913,9 +1557,7 @@ export const ChatteraChatThread: React.FC<ChatteraChatThreadProps> = ({
               title="Toggle Disappearing Message Timer"
             >
               <Timer className="w-3.5 h-3.5" />
-              {stealthSeconds
-                ? `Disappearing: ${stealthSeconds}s`
-                : 'Disappearing: Off'}
+              {stealthSeconds ? `${stealthSeconds}s Timer` : 'Timer'}
             </button>
 
             <button
@@ -933,12 +1575,12 @@ export const ChatteraChatThread: React.FC<ChatteraChatThreadProps> = ({
           </div>
 
           <span
-            className="text-[11px] tabular-nums"
+            className="text-[11px] tabular-nums hidden sm:inline"
             style={{ color: 'var(--muted)' }}
           >
             {isRecordingVoice
               ? 'Recording voice note…'
-              : 'Real-time sync active'}
+              : 'Real-time chat active'}
           </span>
         </div>
 
@@ -1023,7 +1665,7 @@ export const ChatteraChatThread: React.FC<ChatteraChatThreadProps> = ({
               placeholder={
                 stealthSeconds
                   ? `Write a ${stealthSeconds}s disappearing message…`
-                  : `Message ${target.name}…`
+                  : `Write a message to ${target.name}…`
               }
               className="flex-1 h-11 px-4 rounded-2xl border text-sm focus:outline-none"
               style={{

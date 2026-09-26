@@ -932,6 +932,7 @@ function MainChatteraApp() {
       keyFingerprint: contact.keyFingerprint,
       isFirestoreBacked: false,
     });
+    setNavTab('chats');
     setMobileChatOpen(true);
   };
 
@@ -1134,6 +1135,8 @@ function MainChatteraApp() {
 
     const cleanPreview = plaintext.startsWith('[VOICE:')
       ? '🎤 Voice message'
+      : plaintext.startsWith('[IMG:')
+      ? '📷 Shared a photo'
       : plaintext.startsWith('[CHT-PAY:')
       ? '💸 Sent ₦ Transfer'
       : plaintext.startsWith('[STEALTH:')
@@ -1147,6 +1150,106 @@ function MainChatteraApp() {
           : c
       )
     );
+
+    // If chatting with a seeded contact who isn't currently logged in on another tab,
+    // trigger a realistic real-time typing/recording indicator & reply
+    const targetId = selectedTarget.id;
+    const targetName = selectedTarget.name;
+    const targetFp = selectedTarget.keyFingerprint;
+    const isPeerLiveHuman = onlinePeers.some((p) => p.uid === targetId);
+
+    if (!isPeerLiveHuman && targetId.startsWith('contact_')) {
+      const isIncomingVoice = plaintext.startsWith('[VOICE:');
+      window.setTimeout(() => {
+        setPeerActivities((prev) => ({
+          ...prev,
+          [targetId]: isIncomingVoice ? 'recording' : 'typing',
+        }));
+      }, 450);
+
+      window.setTimeout(async () => {
+        setPeerActivities((prev) => ({
+          ...prev,
+          [targetId]: 'idle',
+        }));
+
+        let replyText = '';
+        if (isIncomingVoice) {
+          const replyVoiceId = `vn_reply_${Date.now()}`;
+          replyText = `[VOICE:${replyVoiceId}:4:42,74,88,60,92,78,54,84,90,68,46,72,80,62,48,82,70,56,44,64,76,52,38,34] Voice message (0:04)`;
+        } else if (plaintext.startsWith('[CHT-PAY:')) {
+          replyText = `Thank you so much! I just received the transfer alert 🎉🙏`;
+        } else if (plaintext.startsWith('[IMG:')) {
+          replyText = `This photo looks awesome! Thanks for sharing 🔥✨`;
+        } else {
+          const contextualReplies: Record<string, string[]> = {
+            contact_amara: [
+              'Love how smooth the new Chattera chatting page feels! 🚀✨',
+              'Got your message loud and clear! Should we hop on a quick voice call?',
+              'That sounds great! Send me a voice note when you have a moment 🎤',
+            ],
+            contact_daniel: [
+              'Awesome! Everything is syncing in real time on my end 👍',
+              'Just checked it out — super clean and fast!',
+              'Let’s catch up later today, I’ll send over the details.',
+            ],
+            contact_tunde: [
+              'Confirmed! Ready whenever you are 💯',
+              'Sounds like a solid plan, let’s do it!',
+            ],
+            contact_zainab: [
+              'Yay! Thanks for the update 😊✨',
+              'Let me know when you’re free for a quick call!',
+            ],
+            contact_chinedu: [
+              '100% agreed! Real-time delivery is super snappy ⚡',
+              'Got it! I’ll review and reply shortly.',
+            ],
+          };
+          const pool = contextualReplies[targetId] || [
+            `Got your message! Great chatting with you on Chattera ✨`,
+          ];
+          replyText = pool[Math.floor(Math.random() * pool.length)];
+        }
+
+        const encReply = await encryptMessagePlaintext(activeAesKey, replyText);
+        const replyId = generateSafeDocId('pkt');
+        const replyTs = Date.now();
+
+        const replyMsg: DecryptedMessageView = {
+          id: replyId,
+          conversationId: targetId,
+          senderId: targetId,
+          recipientId: activeMyUid,
+          senderKeyFingerprint: targetFp,
+          ciphertext: encReply.ciphertext,
+          iv: encReply.iv,
+          algorithm: 'ECDH-P256-AES256GCM',
+          deliveryStatus: 'verified',
+          createdAt: Timestamp.fromMillis(replyTs),
+          updatedAt: Timestamp.fromMillis(replyTs),
+          plaintext: replyText,
+          decryptionOk: true,
+        };
+
+        setLocalThreadMessages((prev) => {
+          const list = prev[targetId] || [];
+          if (list.some((m) => m.id === replyId)) return prev;
+          return { ...prev, [targetId]: [...list, replyMsg] };
+        });
+
+        const preview = replyText.startsWith('[VOICE:')
+          ? '🎤 Voice message'
+          : replyText;
+        setContacts((prev) =>
+          prev.map((c) =>
+            c.id === targetId
+              ? { ...c, initialMessage: preview, timeLabel: 'Just now' }
+              : c
+          )
+        );
+      }, 1900);
+    }
   };
 
   const handleRevokeMessage = async (messageId: string) => {
@@ -1552,7 +1655,11 @@ function MainChatteraApp() {
                 type="button"
                 onClick={() => {
                   setNavTab(item.id);
-                  setMobileChatOpen(false);
+                  if (item.id === 'chats') {
+                    setMobileChatOpen(true);
+                  } else {
+                    setMobileChatOpen(false);
+                  }
                 }}
                 className="py-1 transition-colors hover:underline underline-offset-4 whitespace-nowrap"
                 style={{
@@ -2281,15 +2388,26 @@ function MainChatteraApp() {
             {/* RIGHT PANE: Active Real-Time Chat & Voice Message Stage */}
             <div
               className={`lg:col-span-7 lg:sticky lg:top-20 h-[calc(100vh-120px)] ${
-                mobileChatOpen ? 'block px-2' : 'hidden lg:block'
+                mobileChatOpen || navTab === 'chats'
+                  ? 'block px-2 sm:px-0'
+                  : 'hidden lg:block'
               }`}
             >
               <ChatteraChatThread
                 target={selectedTarget}
                 myUid={activeMyUid}
                 messages={activeMessages}
+                contacts={contacts}
                 peerActivity={currentPeerActivity}
-                onBackMobile={() => setMobileChatOpen(false)}
+                peerActivitiesMap={peerActivities}
+                onSelectContact={handleSelectSeedContact}
+                onOpenNewChatModal={() => setNewChatPickerOpen(true)}
+                onBackMobile={() => {
+                  setMobileChatOpen(false);
+                  if (navTab === 'chats') {
+                    setNavTab('home');
+                  }
+                }}
                 onSendMessage={handleSendMessage}
                 onRevokeMessage={handleRevokeMessage}
                 onAcknowledgeMessage={handleAcknowledgeMessage}
@@ -2312,6 +2430,7 @@ function MainChatteraApp() {
                   )
                 }
                 onTypingActivity={handleTypingActivity}
+                fullPageMode={navTab === 'chats'}
               />
             </div>
           </div>
@@ -2365,7 +2484,11 @@ function MainChatteraApp() {
               type="button"
               onClick={() => {
                 setNavTab(item.id);
-                setMobileChatOpen(false);
+                if (item.id === 'chats') {
+                  setMobileChatOpen(true);
+                } else {
+                  setMobileChatOpen(false);
+                }
               }}
               className="flex flex-col items-center justify-center min-w-[58px] py-1 transition-colors"
               style={{ color: active ? 'var(--primary)' : 'var(--muted)' }}
