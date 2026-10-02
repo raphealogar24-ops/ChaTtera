@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">CipherGrid E2EE Messenger</string>
+    <string name="brand_title">Chattera</string>
+    <string name="brand_subtitle">Real-Time Messenger · Voice Notes · Status · Wallet</string>
+    <string name="search_placeholder">Search chats, friends, or messages…</string>
+    <string name="tab_home">Home</string>
+    <string name="tab_chats">Chats</string>
+    <string name="tab_status">Status</string>
+    <string name="tab_calls">Calls</string>
+    <string name="tab_wallet">Wallet</string>
+    <string name="tab_bench">Security</string>
+</resources>
