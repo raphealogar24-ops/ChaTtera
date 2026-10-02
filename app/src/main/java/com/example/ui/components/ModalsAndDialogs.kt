@@ -3,6 +3,7 @@ package com.example.ui.components
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,6 +33,7 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material.icons.filled.Videocam
@@ -60,6 +62,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
@@ -1238,3 +1241,255 @@ fun NewChatPickerModal(
         }
     }
 }
+
+@Composable
+fun GoogleSearchModal(
+    initialQuery: String = "",
+    targetContactName: String? = null,
+    onDismiss: () -> Unit,
+    onSendSearchToChat: ((query: String, desc: String) -> Unit)? = null
+) {
+    val colors = LocalChatteraColors.current
+    val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
+    var query by remember { mutableStateOf(initialQuery) }
+    var linkCopied by remember { mutableStateOf(false) }
+
+    val quickTopics = remember {
+        listOf(
+            "Crypto & E2EE",
+            "Tech Trends",
+            "World News",
+            "Currency Rates",
+            "Weather Forecast",
+            "Android Jetpack"
+        )
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(20.dp)
+                .clip(RoundedCornerShape(26.dp))
+                .background(colors.card)
+                .border(1.dp, colors.border, RoundedCornerShape(26.dp))
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                // Header
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = colors.bg,
+                            modifier = Modifier
+                                .size(38.dp)
+                                .border(1.dp, colors.border, RoundedCornerShape(12.dp))
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                GoogleLogoIcon(size = 20.dp)
+                            }
+                        }
+                        Column {
+                            Text(
+                                text = "Google Search",
+                                color = colors.text,
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "Search the web & share live results",
+                                color = colors.muted,
+                                fontSize = 11.sp
+                            )
+                        }
+                    }
+
+                    IconButton(onClick = onDismiss, modifier = Modifier.size(32.dp)) {
+                        Icon(Icons.Default.Close, contentDescription = "Close", tint = colors.muted)
+                    }
+                }
+
+                // Query input field
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    placeholder = { Text("What do you want to find on Google…", fontSize = 13.sp) },
+                    leadingIcon = {
+                        Icon(Icons.Default.Search, contentDescription = null, tint = colors.muted)
+                    },
+                    trailingIcon = {
+                        if (query.isNotBlank()) {
+                            IconButton(onClick = { query = "" }) {
+                                Icon(Icons.Default.Close, contentDescription = "Clear", tint = colors.muted, modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    },
+                    singleLine = true,
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("google_search_modal_input")
+                )
+
+                // Quick Topic Suggestions Chips
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = "Suggested searches",
+                        color = colors.muted,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        quickTopics.forEach { topic ->
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (query == topic) colors.softTint else colors.bg,
+                                modifier = Modifier
+                                    .border(
+                                        1.dp,
+                                        if (query == topic) ChatteraPrimary else colors.border,
+                                        RoundedCornerShape(10.dp)
+                                    )
+                                    .clickable { query = topic }
+                            ) {
+                                Text(
+                                    text = topic,
+                                    color = if (query == topic) ChatteraPrimary else colors.text,
+                                    fontSize = 11.sp,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Action Buttons
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // 1. Search on Google button
+                    Button(
+                        onClick = {
+                            val q = query.trim().ifEmpty { "Chattera E2EE Messenger" }
+                            launchGoogleSearch(context, q)
+                            onDismiss()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4285F4)),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(46.dp)
+                            .testTag("launch_google_search_button")
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            GoogleLogoIcon(size = 18.dp)
+                            Text(
+                                text = if (query.isNotBlank()) "Search Google for \"${query.trim().take(18)}${if (query.trim().length > 18) "…" else ""}\"" else "Open Google Search",
+                                color = Color.White,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+
+                    // 2. Share to Chat button (if in active chat)
+                    if (onSendSearchToChat != null) {
+                        Button(
+                            onClick = {
+                                val cleanQuery = query.trim().ifEmpty { "Chattera E2EE Messenger" }
+                                onSendSearchToChat(cleanQuery, "Google Web Search result for \"$cleanQuery\"")
+                                onDismiss()
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = ChatteraPrimary),
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(46.dp)
+                                .testTag("send_google_search_to_chat_button")
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                                Text(
+                                    text = if (targetContactName != null) "Send Search Link to $targetContactName" else "Send to Chat",
+                                    color = Color.White,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+
+                    // 3. Copy Google Search URL
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = colors.bg,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .border(1.dp, colors.border, RoundedCornerShape(12.dp))
+                            .clickable {
+                                val cleanQuery = query.trim().ifEmpty { "Chattera" }
+                                val searchUrl = "https://www.google.com/search?q=" + java.net.URLEncoder.encode(cleanQuery, "UTF-8")
+                                clipboardManager.setText(AnnotatedString(searchUrl))
+                                linkCopied = true
+                            }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(vertical = 9.dp, horizontal = 14.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(
+                                    if (linkCopied) Icons.Default.Check else Icons.Default.ContentCopy,
+                                    contentDescription = null,
+                                    tint = if (linkCopied) ChatteraOnlineGreen else colors.muted,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Text(
+                                    text = if (linkCopied) "Google Search link copied!" else "Copy Google Search link",
+                                    fontSize = 11.sp,
+                                    color = if (linkCopied) ChatteraOnlineGreen else colors.muted
+                                )
+                            }
+                            Text(
+                                text = "google.com",
+                                fontSize = 10.sp,
+                                fontFamily = FontFamily.Monospace,
+                                color = colors.muted
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+

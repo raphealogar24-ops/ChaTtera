@@ -317,6 +317,7 @@ fun ChatteraChatThreadScreen(
     var inChatSearchOpen by remember { mutableStateOf(false) }
     var inChatSearchQuery by remember { mutableStateOf("") }
     var contactInfoOpen by remember { mutableStateOf(false) }
+    var showGoogleSearchModal by remember { mutableStateOf(false) }
 
     // Voice recording state
     var isRecordingVoice by remember { mutableStateOf(false) }
@@ -569,6 +570,17 @@ fun ChatteraChatThreadScreen(
                     }
 
                     IconButton(
+                        onClick = { showGoogleSearchModal = true },
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(colors.iconBg)
+                            .testTag("chat_header_google_search_button")
+                    ) {
+                        GoogleLogoIcon(size = 18.dp)
+                    }
+
+                    IconButton(
                         onClick = { onStartCall("audio") },
                         modifier = Modifier
                             .size(36.dp)
@@ -659,6 +671,28 @@ fun ChatteraChatThreadScreen(
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.clickable { inChatSearchQuery = "" }
                         )
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = colors.card,
+                        modifier = Modifier
+                            .border(1.dp, Color(0xFF4285F4).copy(alpha = 0.4f), RoundedCornerShape(10.dp))
+                            .clickable {
+                                if (inChatSearchQuery.isNotBlank()) {
+                                    launchGoogleSearch(context, inChatSearchQuery)
+                                } else {
+                                    showGoogleSearchModal = true
+                                }
+                            }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            GoogleLogoIcon(size = 14.dp)
+                            Text("Google ↗", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF4285F4))
+                        }
                     }
                 }
             }
@@ -971,6 +1005,62 @@ fun ChatteraChatThreadScreen(
                                                         text = parsed.body,
                                                         fontSize = 12.sp,
                                                         color = Color.White.copy(alpha = 0.9f)
+                                                    )
+                                                }
+                                            }
+                                        }
+
+                                        parsed.kind == MessageKind.SEARCH && !isRevoked -> {
+                                            val queryToSearch = parsed.searchQuery ?: parsed.body
+                                            Surface(
+                                                shape = RoundedCornerShape(14.dp),
+                                                color = if (isMine) Color.Black.copy(alpha = 0.28f) else colors.bg,
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .border(
+                                                        1.dp,
+                                                        if (isMine) Color.White.copy(alpha = 0.25f) else Color(0xFF4285F4).copy(alpha = 0.35f),
+                                                        RoundedCornerShape(14.dp)
+                                                    )
+                                                    .clickable {
+                                                        launchGoogleSearch(context, queryToSearch)
+                                                    }
+                                                    .testTag("chat_search_bubble_card")
+                                            ) {
+                                                Column(
+                                                    modifier = Modifier.padding(10.dp),
+                                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                                ) {
+                                                    Row(
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                    ) {
+                                                        Surface(
+                                                            shape = CircleShape,
+                                                            color = Color.White,
+                                                            modifier = Modifier.size(22.dp)
+                                                        ) {
+                                                            Box(contentAlignment = Alignment.Center) {
+                                                                GoogleLogoIcon(size = 13.dp)
+                                                            }
+                                                        }
+                                                        Text(
+                                                            text = "Google Search",
+                                                            fontSize = 11.sp,
+                                                            fontWeight = FontWeight.Bold,
+                                                            color = if (isMine) Color.White else Color(0xFF4285F4)
+                                                        )
+                                                    }
+                                                    Text(
+                                                        text = "“$queryToSearch”",
+                                                        fontSize = 13.sp,
+                                                        fontWeight = FontWeight.SemiBold,
+                                                        color = if (isMine) Color.White else colors.text
+                                                    )
+                                                    Text(
+                                                        text = "Tap to open web results on Google ↗",
+                                                        fontSize = 10.sp,
+                                                        color = if (isMine) Color.White.copy(alpha = 0.8f) else colors.muted
                                                     )
                                                 }
                                             }
@@ -1496,6 +1586,23 @@ fun ChatteraChatThreadScreen(
                                     Text("₦ Pay", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = colors.text)
                                 }
                             }
+
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (showGoogleSearchModal) Color(0xFF4285F4).copy(alpha = 0.2f) else colors.iconBg,
+                                modifier = Modifier
+                                    .clickable { showGoogleSearchModal = true }
+                                    .testTag("in_chat_google_search_button")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    GoogleLogoIcon(size = 13.dp)
+                                    Text("Google", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = colors.text)
+                                }
+                            }
                         }
 
                         Text(
@@ -1586,5 +1693,16 @@ fun ChatteraChatThreadScreen(
                 }
             }
         }
+    }
+
+    if (showGoogleSearchModal) {
+        GoogleSearchModal(
+            initialQuery = draft.ifBlank { inChatSearchQuery },
+            targetContactName = target.name,
+            onDismiss = { showGoogleSearchModal = false },
+            onSendSearchToChat = { q, desc ->
+                onSendMessage("[SEARCH:$q] $desc")
+            }
+        )
     }
 }

@@ -102,7 +102,7 @@ data class ReplyQuote(
 )
 
 enum class MessageKind {
-    STANDARD, STEALTH, PAYMENT, VOICE, IMAGE
+    STANDARD, STEALTH, PAYMENT, VOICE, IMAGE, SEARCH
 }
 
 data class ParsedMessagePayload(
@@ -115,6 +115,7 @@ data class ParsedMessagePayload(
     val voicePeaks: List<Int>? = null,
     val imageLabel: String? = null,
     val imageUri: String? = null,
+    val searchQuery: String? = null,
     val replyQuote: ReplyQuote? = null,
     val body: String
 )
@@ -190,6 +191,21 @@ fun parseSpecialPayload(plaintext: String): ParsedMessagePayload {
                 amountNaira = match.groupValues[1].toLongOrNull() ?: 0L,
                 paymentRef = match.groupValues[2],
                 body = match.groupValues[3].trim().ifBlank { match.groupValues[4].trim() },
+                replyQuote = replyQuote
+            )
+        }
+    }
+
+    if (working.startsWith("[SEARCH:") || working.startsWith("[GOOGLE:")) {
+        val searchRegex = Regex("^\\[(?:SEARCH|GOOGLE):([^\\]]+)\\]([\\s\\S]*)$")
+        val match = searchRegex.find(working)
+        if (match != null) {
+            val q = match.groupValues[1].trim()
+            val desc = match.groupValues[2].trim()
+            return ParsedMessagePayload(
+                kind = MessageKind.SEARCH,
+                searchQuery = q,
+                body = if (desc.isNotBlank()) desc else "Google Search: \"$q\"",
                 replyQuote = replyQuote
             )
         }

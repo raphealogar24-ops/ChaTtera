@@ -38,9 +38,11 @@ import androidx.compose.material.icons.automirrored.filled.CallMissed
 import androidx.compose.material.icons.automirrored.filled.CallReceived
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Key
@@ -63,11 +65,14 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -86,12 +91,15 @@ import com.example.ui.components.ChatteraChatThreadScreen
 import com.example.ui.components.ChatteraLogo
 import com.example.ui.components.ChatteraWalletView
 import com.example.ui.components.EncryptedCallModal
+import com.example.ui.components.GoogleLogoIcon
+import com.example.ui.components.GoogleSearchModal
 import com.example.ui.components.NewChatPickerModal
 import com.example.ui.components.PostStatusModal
 import com.example.ui.components.ProfileKeyVaultModal
 import com.example.ui.components.SafetyNumberModal
 import com.example.ui.components.SecurityAuditView
 import com.example.ui.components.StoryViewerModal
+import com.example.ui.components.launchGoogleSearch
 import com.example.ui.theme.ChatteraOnlineGreen
 import com.example.ui.theme.ChatteraPrimary
 import com.example.ui.theme.ChatteraTheme
@@ -143,6 +151,7 @@ fun MainChatteraApp(viewModel: ChatteraViewModel) {
     val safetyModalOpen by viewModel.safetyModalOpen.collectAsStateWithLifecycle()
     val newChatPickerOpen by viewModel.newChatPickerOpen.collectAsStateWithLifecycle()
     val notificationsOpen by viewModel.notificationsOpen.collectAsStateWithLifecycle()
+    var googleSearchModalOpen by remember { mutableStateOf(false) }
 
     // Handle system Back navigation on secondary tabs or mobile chat view
     BackHandler(enabled = !isLoggedOut && (mobileChatOpen || navTab != ChatteraNavTab.HOME)) {
@@ -507,6 +516,7 @@ fun MainChatteraApp(viewModel: ChatteraViewModel) {
                         walletBalance = walletBalance,
                         walletTransactions = walletTransactions,
                         contacts = contacts,
+                        onOpenGoogleSearch = { googleSearchModalOpen = true },
                         modifier = Modifier
                             .weight(0.44f)
                             .fillMaxHeight()
@@ -611,6 +621,7 @@ fun MainChatteraApp(viewModel: ChatteraViewModel) {
                         walletBalance = walletBalance,
                         walletTransactions = walletTransactions,
                         contacts = contacts,
+                        onOpenGoogleSearch = { googleSearchModalOpen = true },
                         modifier = Modifier.fillMaxSize()
                     )
                 }
@@ -671,6 +682,18 @@ fun MainChatteraApp(viewModel: ChatteraViewModel) {
             onClose = { viewModel.setNewChatPickerOpen(false) }
         )
     }
+
+    if (googleSearchModalOpen) {
+        GoogleSearchModal(
+            initialQuery = searchQuery,
+            targetContactName = selectedTarget.name,
+            onDismiss = { googleSearchModalOpen = false },
+            onSendSearchToChat = { q, desc ->
+                viewModel.sendMessage("[SEARCH:$q] $desc", selectedTarget.id)
+                viewModel.setMobileChatOpen(true)
+            }
+        )
+    }
 }
 
 @Composable
@@ -689,9 +712,11 @@ private fun FeedColumnContent(
     walletBalance: Long,
     walletTransactions: List<com.example.data.WalletTransactionEntity>,
     contacts: List<com.example.data.ContactEntity>,
+    onOpenGoogleSearch: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val colors = LocalChatteraColors.current
+    val context = LocalContext.current
 
     Column(
         modifier = modifier
@@ -756,8 +781,32 @@ private fun FeedColumnContent(
         OutlinedTextField(
             value = searchQuery,
             onValueChange = viewModel::setSearchQuery,
-            placeholder = { Text("Search chats, friends, or messages...", fontSize = 13.sp) },
+            placeholder = { Text("Search chats, friends, or Google...", fontSize = 13.sp) },
             leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = colors.muted) },
+            trailingIcon = {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(end = 4.dp)
+                ) {
+                    if (searchQuery.isNotBlank()) {
+                        IconButton(onClick = { viewModel.setSearchQuery("") }, modifier = Modifier.size(30.dp)) {
+                            Icon(Icons.Default.Close, contentDescription = "Clear", tint = colors.muted, modifier = Modifier.size(16.dp))
+                        }
+                    }
+                    IconButton(
+                        onClick = {
+                            if (searchQuery.isNotBlank()) {
+                                launchGoogleSearch(context, searchQuery)
+                            } else {
+                                onOpenGoogleSearch()
+                            }
+                        },
+                        modifier = Modifier.size(32.dp).testTag("header_google_search_button")
+                    ) {
+                        GoogleLogoIcon(size = 18.dp)
+                    }
+                }
+            },
             singleLine = true,
             shape = RoundedCornerShape(18.dp),
             modifier = Modifier
@@ -765,6 +814,61 @@ private fun FeedColumnContent(
                 .padding(horizontal = 14.dp)
                 .testTag("main_search_input")
         )
+
+        // Live Google Web Search Result Card
+        if (searchQuery.isNotBlank()) {
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = colors.card,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp)
+                    .border(1.dp, Color(0xFF4285F4).copy(alpha = 0.35f), RoundedCornerShape(16.dp))
+                    .clickable {
+                        launchGoogleSearch(context, searchQuery)
+                    }
+                    .testTag("google_search_result_card")
+            ) {
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = colors.bg,
+                        modifier = Modifier.size(38.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            GoogleLogoIcon(size = 20.dp)
+                        }
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text("Search on Google", color = Color(0xFF4285F4), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Text("· Web", color = colors.muted, fontSize = 11.sp)
+                        }
+                        Text(
+                            text = "“$searchQuery”",
+                            color = colors.text,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Icon(
+                        Icons.AutoMirrored.Filled.ArrowForward,
+                        contentDescription = "Search Google",
+                        tint = Color(0xFF4285F4),
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+        }
 
         // 3. Quick Actions Grid (Home Tab)
         if (navTab == ChatteraNavTab.HOME) {
@@ -776,7 +880,7 @@ private fun FeedColumnContent(
             ) {
                 val actions = listOf(
                     Triple("New Chat", Icons.Default.Add) { viewModel.setNewChatPickerOpen(true) },
-                    Triple("People", Icons.Default.People) { viewModel.setNewChatPickerOpen(true) },
+                    Triple("Google", null) { onOpenGoogleSearch() },
                     Triple("Status", Icons.Default.RadioButtonChecked) { viewModel.setNavTab(ChatteraNavTab.STATUS) },
                     Triple("Calls", Icons.Default.Call) { viewModel.setNavTab(ChatteraNavTab.CALLS) }
                 )
@@ -789,6 +893,7 @@ private fun FeedColumnContent(
                             .weight(1f)
                             .border(1.dp, colors.border, RoundedCornerShape(18.dp))
                             .clickable { onClick() }
+                            .testTag("quick_action_${label.lowercase().replace(" ", "_")}")
                     ) {
                         Column(
                             modifier = Modifier.padding(vertical = 12.dp, horizontal = 6.dp),
@@ -802,7 +907,11 @@ private fun FeedColumnContent(
                                     .background(colors.softTint),
                                 contentAlignment = Alignment.Center
                             ) {
-                                Icon(icon, contentDescription = label, tint = colors.primary, modifier = Modifier.size(18.dp))
+                                if (icon != null) {
+                                    Icon(icon, contentDescription = label, tint = colors.primary, modifier = Modifier.size(18.dp))
+                                } else {
+                                    GoogleLogoIcon(size = 20.dp)
+                                }
                             }
                             Text(
                                 text = label,

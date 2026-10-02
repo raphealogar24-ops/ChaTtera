@@ -17,6 +17,10 @@ Zero-trust, end-to-end encrypted real-time messaging Android application built w
   - Disappearing stealth messages (`15s`, `60s`)
   - Emoji reactions, message replies, photo sharing, and unsend/revocation
   - Built-in X-Ray Packet Inspector (`Details` mode) to inspect raw encrypted ciphertext and IVs
+- **Google Search Integration**:
+  - Live Google Web Search directly linked from the main search bar with automatic intent routing
+  - In-chat Google Web Search tool with suggested search topics, copy link, and share-to-chat capabilities
+  - Interactive Google Search preview cards (`[SEARCH:...]`) rendered directly in conversations with one-tap web viewing
 - **Status Stories**:
   - Create and view cryptographic status updates with instant encrypted replies
 - **Encrypted Voice & Video Calls**:

@@ -158,3 +158,86 @@ fun ChatteraAvatar(
         }
     }
 }
+
+@Composable
+fun GoogleLogoIcon(
+    size: Dp = 18.dp,
+    modifier: Modifier = Modifier
+) {
+    Canvas(modifier = modifier.size(size)) {
+        val w = this.size.width
+        val h = this.size.height
+        val stroke = w * 0.20f
+        val arcSize = Size(w - stroke, h - stroke)
+        val arcOffset = Offset(stroke / 2f, stroke / 2f)
+
+        // 1. Blue horizontal crossbar
+        drawLine(
+            color = Color(0xFF4285F4),
+            start = Offset(w * 0.44f, h * 0.5f),
+            end = Offset(w - stroke / 2f, h * 0.5f),
+            strokeWidth = stroke,
+            cap = StrokeCap.Square
+        )
+
+        // 2. Blue arc (right-bottom section: from -20 deg to 45 deg)
+        drawArc(
+            color = Color(0xFF4285F4),
+            startAngle = -20f,
+            sweepAngle = 65f,
+            useCenter = false,
+            topLeft = arcOffset,
+            size = arcSize,
+            style = Stroke(width = stroke, cap = StrokeCap.Butt)
+        )
+
+        // 3. Green arc (bottom section: 45 to 135 deg)
+        drawArc(
+            color = Color(0xFF34A853),
+            startAngle = 45f,
+            sweepAngle = 90f,
+            useCenter = false,
+            topLeft = arcOffset,
+            size = arcSize,
+            style = Stroke(width = stroke, cap = StrokeCap.Butt)
+        )
+
+        // 4. Yellow arc (left section: 135 to 225 deg)
+        drawArc(
+            color = Color(0xFFFBBC05),
+            startAngle = 135f,
+            sweepAngle = 90f,
+            useCenter = false,
+            topLeft = arcOffset,
+            size = arcSize,
+            style = Stroke(width = stroke, cap = StrokeCap.Butt)
+        )
+
+        // 5. Red arc (top section: 225 to 340 deg)
+        drawArc(
+            color = Color(0xFFEA4335),
+            startAngle = 225f,
+            sweepAngle = 115f,
+            useCenter = false,
+            topLeft = arcOffset,
+            size = arcSize,
+            style = Stroke(width = stroke, cap = StrokeCap.Butt)
+        )
+    }
+}
+
+fun launchGoogleSearch(context: android.content.Context, query: String) {
+    val clean = query.trim()
+    val url = if (clean.isEmpty()) {
+        "https://www.google.com"
+    } else {
+        "https://www.google.com/search?q=" + java.net.URLEncoder.encode(clean, "UTF-8")
+    }
+    val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)).apply {
+        addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    try {
+        context.startActivity(intent)
+    } catch (_: Exception) {}
+}
+
